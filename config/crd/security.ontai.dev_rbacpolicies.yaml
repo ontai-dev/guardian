@@ -1,0 +1,116 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rbacpolicies.security.ontai.dev
+spec:
+  group: security.ontai.dev
+  names:
+    kind: RBACPolicy
+    listKind: RBACPolicyList
+    plural: rbacpolicies
+    shortNames:
+    - rp
+    singular: rbacpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.enforcementMode
+      name: EnforcementMode
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="RBACPolicyValid")].status
+      name: Valid
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: RBACPolicy is the governing policy resource for the security.ontai.dev
+          API group.
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RBACPolicySpec defines the desired state of a RBACPolicy.
+            properties:
+              allowedClusters:
+                description: AllowedClusters is the list of cluster names this policy
+                  permits operations on.
+                items:
+                  type: string
+                type: array
+              enforcementMode:
+                description: EnforcementMode controls how violations are handled.
+                enum:
+                - strict
+                - audit
+                type: string
+              maximumPermissionSetRef:
+                description: MaximumPermissionSetRef is the name of a PermissionSet
+                  CR that defines the maximum permissions.
+                type: string
+              subjectScope:
+                description: SubjectScope declares the class of principals this policy
+                  governs.
+                enum:
+                - platform
+                - tenant
+                type: string
+            required:
+            - enforcementMode
+            - maximumPermissionSetRef
+            - subjectScope
+            type: object
+          status:
+            description: RBACPolicyStatus defines the observed state of a RBACPolicy.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              profileCount:
+                format: int32
+                type: integer
+              validationSummary:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
