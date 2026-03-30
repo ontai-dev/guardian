@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -99,6 +100,12 @@ func TestMain(m *testing.M) {
 		Recorder: mgr.GetEventRecorderFor("epg-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register EPGReconciler: " + err.Error())
+	}
+
+	// Create the security-system namespace so EPGReconciler can write PermissionSnapshots.
+	secNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "security-system"}}
+	if err := k8sClient.Create(context.Background(), secNS); err != nil {
+		panic("failed to create security-system namespace: " + err.Error())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -281,15 +281,28 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	logger.Info("RBACProfile provisioned",
 		"name", profile.Name, "namespace", profile.Namespace)
 
+	// Explicitly commit the status before signaling EPGReconciler.
+	// The deferred status patch fires AFTER this function returns, but the EPGReconciler
+	// is triggered by the metadata patch below. If EPGReconciler runs before the deferred
+	// patch commits, it sees Provisioned=false and produces an empty snapshot. To avoid
+	// this race, we commit the status here, then update patchBase so the deferred patch
+	// is a no-op.
+	if err := r.Client.Status().Patch(ctx, profile, patchBase); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "failed to commit RBACProfile status before EPG signal",
+				"name", profile.Name, "namespace", profile.Namespace)
+		}
+	}
+	// Advance patchBase to the now-committed state so the deferred patch is a no-op.
+	patchBase = client.MergeFrom(profile.DeepCopy())
+
 	// Annotate with epg-recompute-requested — signals EPGReconciler that this
 	// profile has changed and EPG recomputation is needed. The EPGReconciler will
 	// clear this annotation after processing. This is the inter-reconciler signal
 	// mechanism — not a channel, not a shared struct, not a direct call.
 	//
-	// IMPORTANT: we use a deep copy of `profile` as the patch target so that
-	// r.Client.Patch does not overwrite the in-memory status mutations on `profile`
-	// with the server's current (pre-status-patch) state. The deferred status patch
-	// must run against the mutated in-memory `profile`, not a server-refreshed copy.
+	// Status is committed above before this patch so EPGReconciler always sees
+	// Provisioned=true when it lists profiles in response to this signal.
 	epgBase := profile.DeepCopy()
 	epgTarget := profile.DeepCopy()
 	if epgTarget.Annotations == nil {

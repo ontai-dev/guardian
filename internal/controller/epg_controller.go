@@ -2,9 +2,16 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -13,20 +20,42 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	"github.com/ontai-dev/ont-security/internal/epg"
+)
+
+const (
+	// epgSnapshotNamespace is the namespace where PermissionSnapshot CRs are written.
+	epgSnapshotNamespace = "security-system"
+
+	// epgFieldOwner is the server-side apply field manager name for EPGReconciler.
+	epgFieldOwner = "ont-security-epg"
+
+	// epgTriggerName is the fixed reconcile request name used for all EPG triggers.
+	// All four watch sources map to the same key to collapse multiple simultaneous
+	// triggers into one computation run.
+	epgTriggerName = "epg-trigger"
 )
 
 // EPGReconciler watches RBACProfile, RBACPolicy, IdentityBinding, and PermissionSet.
-// It is triggered when the ontai.dev/epg-recompute-requested=true annotation is present.
+// It is triggered when the ontai.dev/epg-recompute-requested=true annotation is present
+// on any of these objects.
 //
-// This is a STUB implementation for Session 4.
+// On trigger, it performs a full EPG recomputation regardless of which object triggered,
+// using a fixed reconcile request key (security-system/epg-trigger). This collapses
+// multiple simultaneous triggers into one computation run.
 //
-// TODO(session-5): implement full EPG computation.
-// Inputs: all RBACProfiles (provisioned=true only), their RBACPolicies,
-// all IdentityBindings (valid only), all PermissionSets.
-// Output: PermissionSnapshot per target cluster.
-// Algorithm: ont-security-design.md Section 2.
+// Implementation: ont-security-design.md §2.
+//
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=identitybindings,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 type EPGReconciler struct {
 	// Client is the controller-runtime client for Kubernetes API access.
 	Client client.Client
@@ -38,102 +67,333 @@ type EPGReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// Reconcile is the stub reconciliation loop for the EPGReconciler.
+// Reconcile is the main reconciliation loop for the EPGReconciler.
 //
-// When triggered: reads the epg-recompute-requested annotation on the triggering
-// object. If present: logs and removes the annotation. Does not compute the EPG.
-// Does not create PermissionSnapshot. Does not error.
-//
-// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=security.ontai.dev,resources=identitybindings,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots,verbs=get;list;watch;create;update;patch;delete
+// The req is always the fixed key {namespace: "security-system", name: "epg-trigger"}.
+// The reconciler always performs a full EPG recomputation regardless of which object
+// triggered it.
 func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	_ = req // fixed key — content is not used
 
-	// Try to find the triggering object and clear the annotation.
-	// The EPGReconciler is triggered by annotation on any of four types.
-	cleared := false
+	// Step B — List all RBACProfiles across all namespaces. Filter to provisioned.
+	var profileList securityv1alpha1.RBACProfileList
+	if err := r.Client.List(ctx, &profileList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to list RBACProfiles: %w", err)
+	}
+	var provisioned []securityv1alpha1.RBACProfile
+	for _, p := range profileList.Items {
+		if p.Status.Provisioned {
+			provisioned = append(provisioned, p)
+		}
+	}
+	if len(provisioned) == 0 {
+		logger.Info("EPGReconciler: no provisioned profiles — writing empty snapshots")
+	}
 
-	// Try RBACProfile.
-	if !cleared {
-		profile := &securityv1alpha1.RBACProfile{}
-		if err := r.Client.Get(ctx, req.NamespacedName, profile); err == nil {
-			if v, ok := profile.Annotations[epgRecomputeAnnotation]; ok && v == "true" {
-				logger.Info("EPG recomputation requested — deferred to Session 5 implementation",
-					"resource", "RBACProfile",
-					"name", req.Name, "namespace", req.Namespace)
-				patchBase := client.MergeFrom(profile.DeepCopy())
-				delete(profile.Annotations, epgRecomputeAnnotation)
-				if err := r.Client.Patch(ctx, profile, patchBase); err != nil && !apierrors.IsNotFound(err) {
-					logger.Error(err, "failed to clear epg-recompute annotation on RBACProfile")
-				}
-				cleared = true
+	// Step C — Clear the epg-recompute-requested annotation from ALL objects that
+	// carry it, BEFORE computation begins. This ensures any changes arriving during
+	// computation will re-trigger a subsequent run rather than being silently lost.
+	r.clearAnnotations(ctx)
+
+	// Step D — Fetch the governing RBACPolicy for each provisioned profile.
+	// Map: policy name → RBACPolicy.
+	policyMap := make(map[string]securityv1alpha1.RBACPolicy)
+	for _, profile := range provisioned {
+		policyKey := client.ObjectKey{Namespace: profile.Namespace, Name: profile.Spec.RBACPolicyRef}
+		var policy securityv1alpha1.RBACPolicy
+		if err := r.Client.Get(ctx, policyKey, &policy); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Re-annotate the profile to ensure a retry after policy is created.
+				r.signalRecompute(ctx, &profile)
+				r.Recorder.Eventf(&profile, corev1.EventTypeWarning, "PolicyNotFound",
+					"EPGReconciler: RBACPolicy %q not found; requeue in 15s", profile.Spec.RBACPolicyRef)
+				logger.Info("EPGReconciler: RBACPolicy not found — requeuing",
+					"profile", profile.Name, "policy", profile.Spec.RBACPolicyRef)
+				return ctrl.Result{RequeueAfter: 15e9}, nil
 			}
+			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to get RBACPolicy %s: %w",
+				policyKey, err)
+		}
+		policyMap[policy.Name] = policy
+	}
+
+	// Step E — Collect all unique PermissionSet names and fetch them.
+	// Includes both declaration-side permsets and ceiling permsets from policies.
+	type nsName struct{ ns, name string }
+	permSetKeys := make(map[nsName]struct{})
+	for _, profile := range provisioned {
+		for _, decl := range profile.Spec.PermissionDeclarations {
+			permSetKeys[nsName{profile.Namespace, decl.PermissionSetRef}] = struct{}{}
+		}
+		if policy, ok := policyMap[profile.Spec.RBACPolicyRef]; ok {
+			permSetKeys[nsName{profile.Namespace, policy.Spec.MaximumPermissionSetRef}] = struct{}{}
 		}
 	}
 
-	// Try IdentityBinding.
-	if !cleared {
-		binding := &securityv1alpha1.IdentityBinding{}
-		if err := r.Client.Get(ctx, req.NamespacedName, binding); err == nil {
-			if v, ok := binding.Annotations[epgRecomputeAnnotation]; ok && v == "true" {
-				logger.Info("EPG recomputation requested — deferred to Session 5 implementation",
-					"resource", "IdentityBinding",
-					"name", req.Name, "namespace", req.Namespace)
-				patchBase := client.MergeFrom(binding.DeepCopy())
-				delete(binding.Annotations, epgRecomputeAnnotation)
-				if err := r.Client.Patch(ctx, binding, patchBase); err != nil && !apierrors.IsNotFound(err) {
-					logger.Error(err, "failed to clear epg-recompute annotation on IdentityBinding")
-				}
-				cleared = true
+	permSetMap := make(map[string]securityv1alpha1.PermissionSet)
+	for key := range permSetKeys {
+		var ps securityv1alpha1.PermissionSet
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: key.ns, Name: key.name}, &ps); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("EPGReconciler: PermissionSet not found — requeuing",
+					"permissionSet", key.name, "namespace", key.ns)
+				r.Recorder.Eventf(&securityv1alpha1.PermissionSnapshot{
+					ObjectMeta: metav1.ObjectMeta{Name: "epg-error", Namespace: epgSnapshotNamespace},
+				}, corev1.EventTypeWarning, "PermissionSetNotFound",
+					"EPGReconciler: PermissionSet %q not found; requeue in 15s", key.name)
+				return ctrl.Result{RequeueAfter: 15e9}, nil
 			}
+			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to get PermissionSet %s/%s: %w",
+				key.ns, key.name, err)
+		}
+		permSetMap[ps.Name] = ps
+	}
+
+	// Step F — Fetch all valid IdentityBindings (IdentityBindingValid=True).
+	var bindingList securityv1alpha1.IdentityBindingList
+	if err := r.Client.List(ctx, &bindingList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to list IdentityBindings: %w", err)
+	}
+	var validBindings []securityv1alpha1.IdentityBinding
+	for _, b := range bindingList.Items {
+		c := securityv1alpha1.FindCondition(b.Status.Conditions, securityv1alpha1.ConditionTypeIdentityBindingValid)
+		if c != nil && c.Status == metav1.ConditionTrue {
+			validBindings = append(validBindings, b)
 		}
 	}
 
-	// Try PermissionSet.
-	if !cleared {
-		ps := &securityv1alpha1.PermissionSet{}
-		if err := r.Client.Get(ctx, req.NamespacedName, ps); err == nil {
-			if v, ok := ps.Annotations[epgRecomputeAnnotation]; ok && v == "true" {
-				logger.Info("EPG recomputation requested — deferred to Session 5 implementation",
-					"resource", "PermissionSet",
-					"name", req.Name, "namespace", req.Namespace)
-				patchBase := client.MergeFrom(ps.DeepCopy())
-				delete(ps.Annotations, epgRecomputeAnnotation)
-				if err := r.Client.Patch(ctx, ps, patchBase); err != nil && !apierrors.IsNotFound(err) {
-					logger.Error(err, "failed to clear epg-recompute annotation on PermissionSet")
-				}
-				cleared = true
-			}
+	// Step G — Maps are already built: policyMap and permSetMap.
+
+	// Step H — Call epg.ComputeEPG.
+	result, err := epg.ComputeEPG(provisioned, policyMap, permSetMap, validBindings)
+	if err != nil {
+		logger.Error(err, "EPGReconciler: EPG computation failed — requeuing")
+		r.Recorder.Event(
+			r.syntheticEventObj(),
+			corev1.EventTypeWarning, "EPGComputationFailed",
+			fmt.Sprintf("EPGReconciler: computation failed: %v", err),
+		)
+		return ctrl.Result{RequeueAfter: 15e9}, nil
+	}
+
+	// Step I — Upsert PermissionSnapshot for each cluster.
+	// First, fetch existing snapshots to preserve existing names.
+	var existingSnapshots securityv1alpha1.PermissionSnapshotList
+	if err := r.Client.List(ctx, &existingSnapshots, client.InNamespace(epgSnapshotNamespace)); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to list existing PermissionSnapshots: %w", err)
+	}
+	existingByCluster := make(map[string]string)
+	for _, sn := range existingSnapshots.Items {
+		existingByCluster[sn.Spec.TargetCluster] = sn.Name
+	}
+
+	var upsertedSnapshots []*securityv1alpha1.PermissionSnapshot
+	for _, cluster := range result.TargetClusters {
+		snapshot := epg.BuildPermissionSnapshot(result, cluster, epgSnapshotNamespace, existingByCluster[cluster])
+
+		// Server-side apply to upsert the spec.
+		if err := r.Client.Patch(ctx, snapshot, client.Apply, client.ForceOwnership,
+			client.FieldOwner(epgFieldOwner)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to upsert PermissionSnapshot for cluster %s: %w",
+				cluster, err)
+		}
+
+		// Patch the status subresource.
+		// Set ExpectedVersion and Drift=true. Never write LastAckedVersion — that
+		// field is owned exclusively by the runner agent in agent mode.
+		statusPatch := &securityv1alpha1.PermissionSnapshot{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: securityv1alpha1.GroupVersion.String(),
+				Kind:       "PermissionSnapshot",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      snapshot.Name,
+				Namespace: snapshot.Namespace,
+			},
+			Status: securityv1alpha1.PermissionSnapshotStatus{
+				ExpectedVersion: snapshot.Spec.Version,
+				Drift:           true,
+				// LastAckedVersion intentionally not set — owned by runner agent.
+			},
+		}
+		if err := r.Client.Status().Patch(ctx, statusPatch, client.Apply, client.ForceOwnership,
+			client.FieldOwner(epgFieldOwner)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to patch PermissionSnapshot status for cluster %s: %w",
+				cluster, err)
+		}
+
+		upsertedSnapshots = append(upsertedSnapshots, snapshot)
+		logger.Info("EPGReconciler: PermissionSnapshot upserted",
+			"cluster", cluster, "name", snapshot.Name, "version", snapshot.Spec.Version)
+	}
+
+	// Step J — Emit a Normal event on each generated or updated PermissionSnapshot.
+	for _, snapshot := range upsertedSnapshots {
+		r.Recorder.Eventf(snapshot, corev1.EventTypeNormal, "EPGComputed",
+			"EPG computed. Version: %s.", snapshot.Spec.Version)
+	}
+
+	// Step K — Emit a Normal event on the management cluster's RunnerConfig.
+	// runner.ontai.dev types are not imported into this operator. Unstructured access
+	// is used. Skip silently if RunnerConfig is not found (test and bootstrap scenarios).
+	if len(result.TargetClusters) > 0 {
+		rc := &unstructured.Unstructured{}
+		rc.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   "runner.ontai.dev",
+			Version: "v1alpha1",
+			Kind:    "RunnerConfig",
+		})
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: "ont-system", Name: "management"}, rc); err != nil {
+			logger.V(1).Info("EPGReconciler: RunnerConfig not found — skipping EPGRecomputed event",
+				"error", err.Error())
+		} else {
+			msg := fmt.Sprintf("EPG recomputed. %d snapshot(s) written for clusters: %s.",
+				len(result.TargetClusters), strings.Join(result.TargetClusters, ", "))
+			r.Recorder.Event(rc, corev1.EventTypeNormal, "EPGRecomputed", msg)
 		}
 	}
 
-	// Try RBACPolicy.
-	if !cleared {
-		policy := &securityv1alpha1.RBACPolicy{}
-		if err := r.Client.Get(ctx, req.NamespacedName, policy); err == nil {
-			if v, ok := policy.Annotations[epgRecomputeAnnotation]; ok && v == "true" {
-				logger.Info("EPG recomputation requested — deferred to Session 5 implementation",
-					"resource", "RBACPolicy",
-					"name", req.Name, "namespace", req.Namespace)
-				patchBase := client.MergeFrom(policy.DeepCopy())
-				delete(policy.Annotations, epgRecomputeAnnotation)
-				if err := r.Client.Patch(ctx, policy, patchBase); err != nil && !apierrors.IsNotFound(err) {
-					logger.Error(err, "failed to clear epg-recompute annotation on RBACPolicy")
-				}
-			}
-		}
-	}
-
+	// Step L — Return without requeue.
+	logger.Info("EPGReconciler: computation complete",
+		"snapshots", len(upsertedSnapshots),
+		"clusters", strings.Join(result.TargetClusters, ", "))
 	return ctrl.Result{}, nil
+}
+
+// reconcileDrift compares PermissionSnapshot.Status.ExpectedVersion with the
+// LastAckedVersion reported in the corresponding PermissionSnapshotReceipt on the
+// target cluster. If they differ, it ensures Drift=true on the PermissionSnapshot status.
+// This method is invoked by a separate watch loop wired in Session 6.
+// TODO(session-6): implement watch on PermissionSnapshotReceipt changes.
+func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
+	logger := log.FromContext(ctx)
+	var snapshots securityv1alpha1.PermissionSnapshotList
+	if err := r.Client.List(ctx, &snapshots, client.InNamespace(epgSnapshotNamespace)); err != nil {
+		return fmt.Errorf("reconcileDrift: failed to list PermissionSnapshots: %w", err)
+	}
+	for i := range snapshots.Items {
+		sn := &snapshots.Items[i]
+		drift := computeDrift(sn.Status.ExpectedVersion, sn.Status.LastAckedVersion)
+		if drift == sn.Status.Drift {
+			continue // no change needed
+		}
+		patchBase := client.MergeFrom(sn.DeepCopy())
+		sn.Status.Drift = drift
+		if err := r.Client.Status().Patch(ctx, sn, patchBase); err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "reconcileDrift: failed to patch Drift on PermissionSnapshot",
+					"name", sn.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// computeDrift returns true when expected and lastAcked versions differ.
+// Extracted as a pure function for testability. The EPGReconciler.reconcileDrift
+// method applies this per PermissionSnapshot.
+func computeDrift(expected, lastAcked string) bool {
+	return expected != lastAcked
+}
+
+// clearAnnotations removes the epg-recompute-requested annotation from all objects
+// across all namespaces that currently carry it. This is called BEFORE computation
+// begins so that any new signals arriving during computation will be preserved and
+// trigger a subsequent run.
+func (r *EPGReconciler) clearAnnotations(ctx context.Context) {
+	logger := log.FromContext(ctx)
+
+	clearFromList := func(listObj client.ObjectList, items func() []client.Object) {
+		if err := r.Client.List(ctx, listObj); err != nil {
+			logger.V(1).Info("EPGReconciler: clearAnnotations: failed to list", "error", err.Error())
+			return
+		}
+		for _, obj := range items() {
+			if obj.GetAnnotations()[epgRecomputeAnnotation] != "true" {
+				continue
+			}
+			patchBase := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+			ann := obj.GetAnnotations()
+			delete(ann, epgRecomputeAnnotation)
+			obj.SetAnnotations(ann)
+			if err := r.Client.Patch(ctx, obj, patchBase); err != nil && !apierrors.IsNotFound(err) {
+				logger.V(1).Info("EPGReconciler: clearAnnotations: failed to clear annotation",
+					"object", obj.GetName(), "error", err.Error())
+			}
+		}
+	}
+
+	// Clear from RBACProfiles.
+	var profiles securityv1alpha1.RBACProfileList
+	clearFromList(&profiles, func() []client.Object {
+		items := make([]client.Object, len(profiles.Items))
+		for i := range profiles.Items {
+			items[i] = &profiles.Items[i]
+		}
+		return items
+	})
+
+	// Clear from RBACPolicies.
+	var policies securityv1alpha1.RBACPolicyList
+	clearFromList(&policies, func() []client.Object {
+		items := make([]client.Object, len(policies.Items))
+		for i := range policies.Items {
+			items[i] = &policies.Items[i]
+		}
+		return items
+	})
+
+	// Clear from IdentityBindings.
+	var bindings securityv1alpha1.IdentityBindingList
+	clearFromList(&bindings, func() []client.Object {
+		items := make([]client.Object, len(bindings.Items))
+		for i := range bindings.Items {
+			items[i] = &bindings.Items[i]
+		}
+		return items
+	})
+
+	// Clear from PermissionSets.
+	var permSets securityv1alpha1.PermissionSetList
+	clearFromList(&permSets, func() []client.Object {
+		items := make([]client.Object, len(permSets.Items))
+		for i := range permSets.Items {
+			items[i] = &permSets.Items[i]
+		}
+		return items
+	})
+}
+
+// signalRecompute re-annotates an object with epg-recompute-requested=true so that
+// it will re-trigger the EPGReconciler after the current run completes.
+func (r *EPGReconciler) signalRecompute(ctx context.Context, obj client.Object) {
+	patchBase := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+	ann := obj.GetAnnotations()
+	if ann == nil {
+		ann = make(map[string]string)
+	}
+	ann[epgRecomputeAnnotation] = "true"
+	obj.SetAnnotations(ann)
+	if err := r.Client.Patch(ctx, obj, patchBase); err != nil && !apierrors.IsNotFound(err) {
+		log.FromContext(ctx).V(1).Info("EPGReconciler: failed to re-annotate for recompute",
+			"object", obj.GetName(), "error", err.Error())
+	}
+}
+
+// syntheticEventObj returns a minimal PermissionSnapshot to use as an event target
+// when no real snapshot is available (e.g., computation failure before any snapshot exists).
+func (r *EPGReconciler) syntheticEventObj() *securityv1alpha1.PermissionSnapshot {
+	return &securityv1alpha1.PermissionSnapshot{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "epg-controller",
+			Namespace: epgSnapshotNamespace,
+		},
+	}
 }
 
 // epgRecomputeAnnotationFilter is a predicate that only passes events where the
 // ontai.dev/epg-recompute-requested=true annotation is present on the object.
-// This means the EPGReconciler is only triggered when a sibling reconciler has
-// explicitly requested recomputation.
 type epgRecomputeAnnotationFilter struct {
 	predicate.Funcs
 }
@@ -146,36 +406,32 @@ func (epgRecomputeAnnotationFilter) Update(e event.UpdateEvent) bool {
 	return e.ObjectNew.GetAnnotations()[epgRecomputeAnnotation] == "true"
 }
 
-func (epgRecomputeAnnotationFilter) Delete(_ event.DeleteEvent) bool { return false }
-
+func (epgRecomputeAnnotationFilter) Delete(_ event.DeleteEvent) bool   { return false }
 func (epgRecomputeAnnotationFilter) Generic(_ event.GenericEvent) bool { return false }
 
 // SetupWithManager registers the EPGReconciler to watch four resource types.
-// Each watch uses a filter that only enqueues when ontai.dev/epg-recompute-requested=true
-// is present on the object.
+// All watches map to the fixed reconcile key (security-system/epg-trigger) so that
+// multiple simultaneous triggers collapse into one computation run.
 func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	filter := epgRecomputeAnnotationFilter{}
+
+	// fixedKey maps any triggering object to the constant reconcile request.
+	fixedKey := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, _ client.Object) []reconcile.Request {
+			return []reconcile.Request{
+				{NamespacedName: types.NamespacedName{
+					Namespace: epgSnapshotNamespace,
+					Name:      epgTriggerName,
+				}},
+			}
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
-		Watches(
-			&securityv1alpha1.RBACProfile{},
-			&handler.EnqueueRequestForObject{},
-			builder.WithPredicates(filter),
-		).
-		Watches(
-			&securityv1alpha1.RBACPolicy{},
-			&handler.EnqueueRequestForObject{},
-			builder.WithPredicates(filter),
-		).
-		Watches(
-			&securityv1alpha1.IdentityBinding{},
-			&handler.EnqueueRequestForObject{},
-			builder.WithPredicates(filter),
-		).
-		Watches(
-			&securityv1alpha1.PermissionSet{},
-			&handler.EnqueueRequestForObject{},
-			builder.WithPredicates(filter),
-		).
+		Watches(&securityv1alpha1.RBACProfile{}, fixedKey, builder.WithPredicates(filter)).
+		Watches(&securityv1alpha1.RBACPolicy{}, fixedKey, builder.WithPredicates(filter)).
+		Watches(&securityv1alpha1.IdentityBinding{}, fixedKey, builder.WithPredicates(filter)).
+		Watches(&securityv1alpha1.PermissionSet{}, fixedKey, builder.WithPredicates(filter)).
 		Named("epg").
 		Complete(r)
 }
