@@ -20,9 +20,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
 	"github.com/ontai-dev/ont-security/internal/controller"
+	"github.com/ontai-dev/ont-security/internal/webhook"
 )
 
 var scheme = runtime.NewScheme()
@@ -37,6 +39,7 @@ func main() {
 		metricsAddr          string
 		healthProbeAddr      string
 		enableLeaderElection bool
+		webhookPort          int
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
@@ -46,6 +49,8 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Ensures only one instance is active at a time.")
+	flag.IntVar(&webhookPort, "webhook-port", 9443,
+		"The port the admission webhook server binds to.")
 
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -61,6 +66,9 @@ func main() {
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "ont-security-leader",
 		LeaderElectionNamespace: "security-system",
+		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
+			Port: webhookPort,
+		}),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -103,7 +111,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO(session-5): register the admission webhook server here once webhook types are defined.
+	// CS-INV-001: admission webhook is the enforcement mechanism; it must be registered
+	// before the manager starts. CS-INV-006: leader election is enforced by the manager —
+	// the webhook server becomes active only after the leader lock is acquired.
+	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
+	if err := webhookServer.Register(); err != nil {
+		setupLog.Error(err, "unable to register admission webhook")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

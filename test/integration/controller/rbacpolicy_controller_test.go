@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
 	"github.com/ontai-dev/ont-security/internal/controller"
@@ -67,8 +68,10 @@ func TestMain(m *testing.M) {
 	}
 
 	// Start the reconcilers in a background manager.
+	// Metrics server is disabled to avoid port conflicts when tests run in parallel.
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme,
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
 		panic("failed to create manager: " + err.Error())

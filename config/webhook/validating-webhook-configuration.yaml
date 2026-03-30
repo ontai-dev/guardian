@@ -1,0 +1,40 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ont-security-rbac-webhook
+  annotations:
+    # cert-manager injects the CA bundle from the ont-security-webhook-cert Certificate.
+    cert-manager.io/inject-ca-from: security-system/ont-security-webhook-cert
+webhooks:
+  - name: validate-rbac.security.ontai.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # FailurePolicy: Fail — if the webhook is unreachable, admission is blocked.
+    # This enforces CS-INV-001: policy without enforcement is decoration.
+    failurePolicy: Fail
+    # kube-system is excluded — system components manage their own RBAC and do not
+    # carry the ontai.dev/rbac-owner annotation. All tenant and operator namespaces
+    # are subject to enforcement.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+    rules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["roles", "clusterroles", "rolebindings", "clusterrolebindings"]
+        scope: "*"
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["serviceaccounts"]
+        scope: "*"
+    clientConfig:
+      service:
+        name: ont-security-webhook-service
+        namespace: security-system
+        path: /validate-rbac
+        port: 443
