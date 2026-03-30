@@ -33,10 +33,15 @@ const (
 	// epgFieldOwner is the server-side apply field manager name for EPGReconciler.
 	epgFieldOwner = "ont-security-epg"
 
-	// epgTriggerName is the fixed reconcile request name used for all EPG triggers.
-	// All four watch sources map to the same key to collapse multiple simultaneous
-	// triggers into one computation run.
+	// epgTriggerName is the fixed reconcile request name used for all EPG recompute triggers.
+	// All four annotation-based watch sources map to this key to collapse multiple
+	// simultaneous triggers into one computation run.
 	epgTriggerName = "epg-trigger"
+
+	// epgDriftTriggerName is the fixed reconcile request name used for drift-check triggers.
+	// PermissionSnapshotReceipt and PermissionSnapshot watches map to this key.
+	// When dispatched, only reconcileDrift runs — no full EPG recomputation.
+	epgDriftTriggerName = "drift-check"
 )
 
 // EPGReconciler watches RBACProfile, RBACPolicy, IdentityBinding, and PermissionSet.
@@ -55,6 +60,7 @@ const (
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshotreceipts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 type EPGReconciler struct {
 	// Client is the controller-runtime client for Kubernetes API access.
@@ -69,12 +75,29 @@ type EPGReconciler struct {
 
 // Reconcile is the main reconciliation loop for the EPGReconciler.
 //
-// The req is always the fixed key {namespace: "security-system", name: "epg-trigger"}.
-// The reconciler always performs a full EPG recomputation regardless of which object
-// triggered it.
+// Two fixed request keys are used:
+//   - "epg-trigger": full EPG recomputation path (Sessions 5+).
+//   - "drift-check": drift reconciliation only — no EPG recomputation.
+//
+// Any other request name is logged and ignored (graceful unknown key handling).
 func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	_ = req // fixed key — content is not used
+
+	// Step A — Dispatch based on the fixed request key.
+	switch req.Name {
+	case epgDriftTriggerName:
+		// drift-check path: reconcile drift status on existing snapshots only.
+		// Does not recompute the EPG. Does not clear epg-recompute-requested annotations.
+		if err := r.reconcileDrift(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	case epgTriggerName:
+		// epg-trigger path: full EPG recomputation. Continue to Step B below.
+	default:
+		logger.Info("EPGReconciler: unexpected reconcile request key — ignoring", "name", req.Name)
+		return ctrl.Result{}, nil
+	}
 
 	// Step B — List all RBACProfiles across all namespaces. Filter to provisioned.
 	var profileList securityv1alpha1.RBACProfileList
@@ -261,40 +284,60 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-// reconcileDrift compares PermissionSnapshot.Status.ExpectedVersion with the
-// LastAckedVersion reported in the corresponding PermissionSnapshotReceipt on the
-// target cluster. If they differ, it ensures Drift=true on the PermissionSnapshot status.
-// This method is invoked by a separate watch loop wired in Session 6.
-// TODO(session-6): implement watch on PermissionSnapshotReceipt changes.
+// reconcileDrift lists all PermissionSnapshots in security-system, computes the
+// drift state for each via ReconcileAllDrift, and patches any snapshot whose
+// Status.Drift does not match the computed value.
+//
+// Events are emitted on drift state transitions:
+//   - false→true (regression): Warning "SnapshotDriftDetected"
+//   - true→false (delivered):  Normal  "SnapshotDelivered"
+//
+// This method never writes Status.LastAckedVersion — that field is owned
+// exclusively by the management cluster ont-agent receipt observation loop.
 func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 	logger := log.FromContext(ctx)
-	var snapshots securityv1alpha1.PermissionSnapshotList
-	if err := r.Client.List(ctx, &snapshots, client.InNamespace(epgSnapshotNamespace)); err != nil {
+
+	var snapshotList securityv1alpha1.PermissionSnapshotList
+	if err := r.Client.List(ctx, &snapshotList, client.InNamespace(epgSnapshotNamespace)); err != nil {
 		return fmt.Errorf("reconcileDrift: failed to list PermissionSnapshots: %w", err)
 	}
-	for i := range snapshots.Items {
-		sn := &snapshots.Items[i]
-		drift := computeDrift(sn.Status.ExpectedVersion, sn.Status.LastAckedVersion)
-		if drift == sn.Status.Drift {
-			continue // no change needed
+
+	driftResults := ReconcileAllDrift(snapshotList.Items)
+
+	for i, dr := range driftResults {
+		sn := &snapshotList.Items[i]
+
+		if sn.Status.Drift == dr.IsDrifted {
+			continue // already correct — avoid unnecessary API write
 		}
+
+		prevDrift := sn.Status.Drift
 		patchBase := client.MergeFrom(sn.DeepCopy())
-		sn.Status.Drift = drift
+		sn.Status.Drift = dr.IsDrifted
 		if err := r.Client.Status().Patch(ctx, sn, patchBase); err != nil {
 			if !apierrors.IsNotFound(err) {
 				logger.Error(err, "reconcileDrift: failed to patch Drift on PermissionSnapshot",
 					"name", sn.Name)
 			}
+			continue
+		}
+
+		// Emit transition event.
+		if dr.IsDrifted && !prevDrift {
+			// Regression: snapshot was in sync, now drifted (e.g. agent restarted).
+			r.Recorder.Eventf(sn, corev1.EventTypeWarning, "SnapshotDriftDetected",
+				"Drift detected: %s.", dr.Reason)
+			logger.Info("reconcileDrift: drift regression detected",
+				"snapshot", sn.Name, "reason", dr.Reason)
+		} else if !dr.IsDrifted && prevDrift {
+			// Delivery confirmed: snapshot was drifted, now acknowledged.
+			r.Recorder.Eventf(sn, corev1.EventTypeNormal, "SnapshotDelivered",
+				"Target cluster acknowledged snapshot version %s.", dr.ExpectedVersion)
+			logger.Info("reconcileDrift: snapshot delivered",
+				"snapshot", sn.Name, "version", dr.ExpectedVersion)
 		}
 	}
 	return nil
-}
-
-// computeDrift returns true when expected and lastAcked versions differ.
-// Extracted as a pure function for testability. The EPGReconciler.reconcileDrift
-// method applies this per PermissionSnapshot.
-func computeDrift(expected, lastAcked string) bool {
-	return expected != lastAcked
 }
 
 // clearAnnotations removes the epg-recompute-requested annotation from all objects
@@ -409,13 +452,25 @@ func (epgRecomputeAnnotationFilter) Update(e event.UpdateEvent) bool {
 func (epgRecomputeAnnotationFilter) Delete(_ event.DeleteEvent) bool   { return false }
 func (epgRecomputeAnnotationFilter) Generic(_ event.GenericEvent) bool { return false }
 
-// SetupWithManager registers the EPGReconciler to watch four resource types.
-// All watches map to the fixed reconcile key (security-system/epg-trigger) so that
-// multiple simultaneous triggers collapse into one computation run.
+// SetupWithManager registers the EPGReconciler to watch six resource types.
+//
+// Four watches use the annotation filter and map to the "epg-trigger" fixed key —
+// they trigger full EPG recomputation:
+//   - RBACProfile (annotation: ontai.dev/epg-recompute-requested)
+//   - RBACPolicy
+//   - IdentityBinding
+//   - PermissionSet
+//
+// Two watches map to the "drift-check" fixed key — they trigger reconcileDrift only:
+//   - PermissionSnapshotReceipt (any create/update: agent acknowledgement arrived)
+//   - PermissionSnapshot (any create/update: new snapshot version available)
+//
+// Multiple simultaneous triggers of the same key collapse into one run via the
+// work queue.
 func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	filter := epgRecomputeAnnotationFilter{}
 
-	// fixedKey maps any triggering object to the constant reconcile request.
+	// fixedKey maps any triggering object to the epg-trigger reconcile request.
 	fixedKey := handler.EnqueueRequestsFromMapFunc(
 		func(_ context.Context, _ client.Object) []reconcile.Request {
 			return []reconcile.Request{
@@ -427,11 +482,27 @@ func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// driftKey maps any triggering object to the drift-check reconcile request.
+	driftKey := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, _ client.Object) []reconcile.Request {
+			return []reconcile.Request{
+				{NamespacedName: types.NamespacedName{
+					Namespace: epgSnapshotNamespace,
+					Name:      epgDriftTriggerName,
+				}},
+			}
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
+		// EPG recomputation triggers (annotation-filtered).
 		Watches(&securityv1alpha1.RBACProfile{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.RBACPolicy{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.IdentityBinding{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.PermissionSet{}, fixedKey, builder.WithPredicates(filter)).
+		// Drift-check triggers (all create/update events, no annotation filter).
+		Watches(&securityv1alpha1.PermissionSnapshotReceipt{}, driftKey).
+		Watches(&securityv1alpha1.PermissionSnapshot{}, driftKey).
 		Named("epg").
 		Complete(r)
 }
