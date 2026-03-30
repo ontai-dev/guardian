@@ -1,0 +1,119 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: permissionsets.security.ontai.dev
+spec:
+  group: security.ontai.dev
+  names:
+    kind: PermissionSet
+    listKind: PermissionSetList
+    plural: permissionsets
+    shortNames:
+    - ps
+    singular: permissionset
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: PermissionSet is a named, reusable collection of permissions.
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PermissionSetSpec defines the desired state of a PermissionSet.
+            properties:
+              description:
+                description: Description is a human-readable explanation of the permission set's intent.
+                type: string
+              permissions:
+                description: Permissions is the list of permission rules in this set. Must not be empty.
+                items:
+                  description: PermissionRule defines a single permission rule within a PermissionSet.
+                  properties:
+                    apiGroups:
+                      description: APIGroups is the list of API groups this rule applies to. Empty string means core.
+                      items:
+                        type: string
+                      type: array
+                    resourceNames:
+                      description: ResourceNames restricts the rule to named resources. Empty means all.
+                      items:
+                        type: string
+                      type: array
+                    resources:
+                      description: Resources is the list of resource types this rule applies to.
+                      items:
+                        type: string
+                      type: array
+                    verbs:
+                      description: Verbs is the list of permitted operations.
+                      items:
+                        enum:
+                        - get
+                        - list
+                        - watch
+                        - create
+                        - update
+                        - patch
+                        - delete
+                        - deletecollection
+                        type: string
+                      type: array
+                  required:
+                  - resources
+                  - verbs
+                  type: object
+                type: array
+            required:
+            - permissions
+            type: object
+          status:
+            description: PermissionSetStatus defines the observed state of a PermissionSet.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current state.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              profileReferenceCount:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -112,3 +112,679 @@ func (in *RBACPolicyList) DeepCopyObject() runtime.Object {
 	}
 	return nil
 }
+
+// --- PermissionSet ---
+
+// DeepCopyInto copies all properties of PermissionRule into another PermissionRule instance.
+func (in *PermissionRule) DeepCopyInto(out *PermissionRule) {
+	*out = *in
+	if in.APIGroups != nil {
+		in, out := &in.APIGroups, &out.APIGroups
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Verbs != nil {
+		in, out := &in.Verbs, &out.Verbs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ResourceNames != nil {
+		in, out := &in.ResourceNames, &out.ResourceNames
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionRule.
+func (in *PermissionRule) DeepCopy() *PermissionRule {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionRule)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSetSpec into another PermissionSetSpec instance.
+func (in *PermissionSetSpec) DeepCopyInto(out *PermissionSetSpec) {
+	*out = *in
+	if in.Permissions != nil {
+		in, out := &in.Permissions, &out.Permissions
+		*out = make([]PermissionRule, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSetSpec.
+func (in *PermissionSetSpec) DeepCopy() *PermissionSetSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSetSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSetStatus into another PermissionSetStatus instance.
+func (in *PermissionSetStatus) DeepCopyInto(out *PermissionSetStatus) {
+	*out = *in
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSetStatus.
+func (in *PermissionSetStatus) DeepCopy() *PermissionSetStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSetStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSet into another PermissionSet instance.
+func (in *PermissionSet) DeepCopyInto(out *PermissionSet) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy returns a deep copy of PermissionSet.
+func (in *PermissionSet) DeepCopy() *PermissionSet {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSet)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSet.
+func (in *PermissionSet) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of PermissionSetList into another PermissionSetList instance.
+func (in *PermissionSetList) DeepCopyInto(out *PermissionSetList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]PermissionSet, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSetList.
+func (in *PermissionSetList) DeepCopy() *PermissionSetList {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSetList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSetList.
+func (in *PermissionSetList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// --- RBACProfile ---
+
+// DeepCopyInto copies all properties of PermissionDeclaration into another instance.
+func (in *PermissionDeclaration) DeepCopyInto(out *PermissionDeclaration) {
+	*out = *in
+	if in.Clusters != nil {
+		in, out := &in.Clusters, &out.Clusters
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionDeclaration.
+func (in *PermissionDeclaration) DeepCopy() *PermissionDeclaration {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionDeclaration)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of RBACProfileSpec into another RBACProfileSpec instance.
+func (in *RBACProfileSpec) DeepCopyInto(out *RBACProfileSpec) {
+	*out = *in
+	if in.TargetClusters != nil {
+		in, out := &in.TargetClusters, &out.TargetClusters
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.PermissionDeclarations != nil {
+		in, out := &in.PermissionDeclarations, &out.PermissionDeclarations
+		*out = make([]PermissionDeclaration, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of RBACProfileSpec.
+func (in *RBACProfileSpec) DeepCopy() *RBACProfileSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(RBACProfileSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of RBACProfileStatus into another RBACProfileStatus instance.
+func (in *RBACProfileStatus) DeepCopyInto(out *RBACProfileStatus) {
+	*out = *in
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.LastProvisionedAt != nil {
+		t := *in.LastProvisionedAt
+		out.LastProvisionedAt = &t
+	}
+}
+
+// DeepCopy returns a deep copy of RBACProfileStatus.
+func (in *RBACProfileStatus) DeepCopy() *RBACProfileStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(RBACProfileStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of RBACProfile into another RBACProfile instance.
+func (in *RBACProfile) DeepCopyInto(out *RBACProfile) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy returns a deep copy of RBACProfile.
+func (in *RBACProfile) DeepCopy() *RBACProfile {
+	if in == nil {
+		return nil
+	}
+	out := new(RBACProfile)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for RBACProfile.
+func (in *RBACProfile) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of RBACProfileList into another RBACProfileList instance.
+func (in *RBACProfileList) DeepCopyInto(out *RBACProfileList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]RBACProfile, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of RBACProfileList.
+func (in *RBACProfileList) DeepCopy() *RBACProfileList {
+	if in == nil {
+		return nil
+	}
+	out := new(RBACProfileList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for RBACProfileList.
+func (in *RBACProfileList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// --- IdentityBinding ---
+
+// DeepCopyInto copies all properties of OIDCConfig into another OIDCConfig instance.
+func (in *OIDCConfig) DeepCopyInto(out *OIDCConfig) {
+	*out = *in
+}
+
+// DeepCopy returns a deep copy of OIDCConfig.
+func (in *OIDCConfig) DeepCopy() *OIDCConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(OIDCConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of ServiceAccountConfig into another instance.
+func (in *ServiceAccountConfig) DeepCopyInto(out *ServiceAccountConfig) {
+	*out = *in
+}
+
+// DeepCopy returns a deep copy of ServiceAccountConfig.
+func (in *ServiceAccountConfig) DeepCopy() *ServiceAccountConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(ServiceAccountConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of CertificateConfig into another instance.
+func (in *CertificateConfig) DeepCopyInto(out *CertificateConfig) {
+	*out = *in
+}
+
+// DeepCopy returns a deep copy of CertificateConfig.
+func (in *CertificateConfig) DeepCopy() *CertificateConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(CertificateConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of IdentityBindingSpec into another instance.
+func (in *IdentityBindingSpec) DeepCopyInto(out *IdentityBindingSpec) {
+	*out = *in
+	if in.OIDCConfig != nil {
+		x := in.OIDCConfig.DeepCopy()
+		out.OIDCConfig = x
+	}
+	if in.ServiceAccountConfig != nil {
+		x := in.ServiceAccountConfig.DeepCopy()
+		out.ServiceAccountConfig = x
+	}
+	if in.CertificateConfig != nil {
+		x := in.CertificateConfig.DeepCopy()
+		out.CertificateConfig = x
+	}
+}
+
+// DeepCopy returns a deep copy of IdentityBindingSpec.
+func (in *IdentityBindingSpec) DeepCopy() *IdentityBindingSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(IdentityBindingSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of IdentityBindingStatus into another instance.
+func (in *IdentityBindingStatus) DeepCopyInto(out *IdentityBindingStatus) {
+	*out = *in
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of IdentityBindingStatus.
+func (in *IdentityBindingStatus) DeepCopy() *IdentityBindingStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(IdentityBindingStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of IdentityBinding into another instance.
+func (in *IdentityBinding) DeepCopyInto(out *IdentityBinding) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy returns a deep copy of IdentityBinding.
+func (in *IdentityBinding) DeepCopy() *IdentityBinding {
+	if in == nil {
+		return nil
+	}
+	out := new(IdentityBinding)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for IdentityBinding.
+func (in *IdentityBinding) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of IdentityBindingList into another instance.
+func (in *IdentityBindingList) DeepCopyInto(out *IdentityBindingList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]IdentityBinding, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of IdentityBindingList.
+func (in *IdentityBindingList) DeepCopy() *IdentityBindingList {
+	if in == nil {
+		return nil
+	}
+	out := new(IdentityBindingList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for IdentityBindingList.
+func (in *IdentityBindingList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// --- PermissionSnapshot ---
+
+// DeepCopyInto copies all properties of AllowedOperation into another instance.
+func (in *AllowedOperation) DeepCopyInto(out *AllowedOperation) {
+	*out = *in
+	if in.Verbs != nil {
+		in, out := &in.Verbs, &out.Verbs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Clusters != nil {
+		in, out := &in.Clusters, &out.Clusters
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+// DeepCopy returns a deep copy of AllowedOperation.
+func (in *AllowedOperation) DeepCopy() *AllowedOperation {
+	if in == nil {
+		return nil
+	}
+	out := new(AllowedOperation)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PrincipalPermissionEntry into another instance.
+func (in *PrincipalPermissionEntry) DeepCopyInto(out *PrincipalPermissionEntry) {
+	*out = *in
+	if in.AllowedOperations != nil {
+		in, out := &in.AllowedOperations, &out.AllowedOperations
+		*out = make([]AllowedOperation, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PrincipalPermissionEntry.
+func (in *PrincipalPermissionEntry) DeepCopy() *PrincipalPermissionEntry {
+	if in == nil {
+		return nil
+	}
+	out := new(PrincipalPermissionEntry)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotSpec into another instance.
+func (in *PermissionSnapshotSpec) DeepCopyInto(out *PermissionSnapshotSpec) {
+	*out = *in
+	in.GeneratedAt.DeepCopyInto(&out.GeneratedAt)
+	if in.PrincipalPermissions != nil {
+		in, out := &in.PrincipalPermissions, &out.PrincipalPermissions
+		*out = make([]PrincipalPermissionEntry, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotSpec.
+func (in *PermissionSnapshotSpec) DeepCopy() *PermissionSnapshotSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotStatus into another instance.
+func (in *PermissionSnapshotStatus) DeepCopyInto(out *PermissionSnapshotStatus) {
+	*out = *in
+	if in.LastSeen != nil {
+		t := *in.LastSeen
+		out.LastSeen = &t
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotStatus.
+func (in *PermissionSnapshotStatus) DeepCopy() *PermissionSnapshotStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshot into another instance.
+func (in *PermissionSnapshot) DeepCopyInto(out *PermissionSnapshot) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshot.
+func (in *PermissionSnapshot) DeepCopy() *PermissionSnapshot {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshot)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSnapshot.
+func (in *PermissionSnapshot) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotList into another instance.
+func (in *PermissionSnapshotList) DeepCopyInto(out *PermissionSnapshotList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]PermissionSnapshot, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotList.
+func (in *PermissionSnapshotList) DeepCopy() *PermissionSnapshotList {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSnapshotList.
+func (in *PermissionSnapshotList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// --- PermissionSnapshotReceipt ---
+
+// DeepCopyInto copies all properties of PermissionSnapshotReceiptSpec into another instance.
+func (in *PermissionSnapshotReceiptSpec) DeepCopyInto(out *PermissionSnapshotReceiptSpec) {
+	*out = *in
+	in.AcknowledgedAt.DeepCopyInto(&out.AcknowledgedAt)
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotReceiptSpec.
+func (in *PermissionSnapshotReceiptSpec) DeepCopy() *PermissionSnapshotReceiptSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotReceiptSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotReceiptStatus into another instance.
+func (in *PermissionSnapshotReceiptStatus) DeepCopyInto(out *PermissionSnapshotReceiptStatus) {
+	*out = *in
+	if in.LocalArtifacts != nil {
+		in, out := &in.LocalArtifacts, &out.LocalArtifacts
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotReceiptStatus.
+func (in *PermissionSnapshotReceiptStatus) DeepCopy() *PermissionSnapshotReceiptStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotReceiptStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotReceipt into another instance.
+func (in *PermissionSnapshotReceipt) DeepCopyInto(out *PermissionSnapshotReceipt) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotReceipt.
+func (in *PermissionSnapshotReceipt) DeepCopy() *PermissionSnapshotReceipt {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotReceipt)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSnapshotReceipt.
+func (in *PermissionSnapshotReceipt) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of PermissionSnapshotReceiptList into another instance.
+func (in *PermissionSnapshotReceiptList) DeepCopyInto(out *PermissionSnapshotReceiptList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]PermissionSnapshotReceipt, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy returns a deep copy of PermissionSnapshotReceiptList.
+func (in *PermissionSnapshotReceiptList) DeepCopy() *PermissionSnapshotReceiptList {
+	if in == nil {
+		return nil
+	}
+	out := new(PermissionSnapshotReceiptList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject implements runtime.Object for PermissionSnapshotReceiptList.
+func (in *PermissionSnapshotReceiptList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}

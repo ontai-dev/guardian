@@ -1,10 +1,9 @@
 // Binary ont-security is the controller-runtime manager entry point for the
 // ont-security operator.
 //
-// It registers the RBACPolicyReconciler and starts the manager with leader
-// election. Future reconcilers (RBACProfileReconciler, EPGReconciler,
-// IdentityBindingReconciler) and the admission webhook server are registered
-// here as they are implemented.
+// It registers all reconcilers (RBACPolicyReconciler, RBACProfileReconciler,
+// IdentityBindingReconciler, EPGReconciler) and starts the manager with leader
+// election. The admission webhook server is registered here once implemented.
 //
 // Namespaces and lease names follow ont-security-design.md Section 1 and the
 // ONT Platform Constitution Section 6.
@@ -77,9 +76,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO(session-4): register RBACProfileReconciler here once types are defined.
-	// TODO(session-4): register EPGReconciler here once EPG types are defined.
-	// TODO(session-4): register IdentityBindingReconciler here once types are defined.
+	if err := (&controller.RBACProfileReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RBACProfile")
+		os.Exit(1)
+	}
+
+	if err := (&controller.IdentityBindingReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "IdentityBinding")
+		os.Exit(1)
+	}
+
+	if err := (&controller.EPGReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("epg-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EPG")
+		os.Exit(1)
+	}
+
 	// TODO(session-5): register the admission webhook server here once webhook types are defined.
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

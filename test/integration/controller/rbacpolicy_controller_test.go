@@ -65,7 +65,7 @@ func TestMain(m *testing.M) {
 		panic("failed to create client: " + err.Error())
 	}
 
-	// Start the reconciler in a background manager.
+	// Start the reconcilers in a background manager.
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
 	})
@@ -77,7 +77,28 @@ func TestMain(m *testing.M) {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		panic("failed to register reconciler: " + err.Error())
+		panic("failed to register RBACPolicyReconciler: " + err.Error())
+	}
+	if err := (&controller.RBACProfileReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		panic("failed to register RBACProfileReconciler: " + err.Error())
+	}
+	if err := (&controller.IdentityBindingReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		panic("failed to register IdentityBindingReconciler: " + err.Error())
+	}
+	if err := (&controller.EPGReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("epg-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		panic("failed to register EPGReconciler: " + err.Error())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,8 +145,24 @@ func makePolicy(t *testing.T, name, namespace string, spec securityv1alpha1.RBAC
 
 // TestReconciler_ValidPolicySetsValidConditionTrue verifies that a structurally
 // valid RBACPolicy ends up with RBACPolicyValid=True after reconciliation.
+// The PermissionSet referenced by MaximumPermissionSetRef must exist — this is
+// enforced by the existence check added in Session 4.
 func TestReconciler_ValidPolicySetsValidConditionTrue(t *testing.T) {
 	ns := "default"
+	// Create the PermissionSet first so the policy reconciler finds it.
+	ps := &securityv1alpha1.PermissionSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-max", Namespace: ns},
+		Spec: securityv1alpha1.PermissionSetSpec{
+			Permissions: []securityv1alpha1.PermissionRule{
+				{Resources: []string{"pods"}, Verbs: []string{"get"}},
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), ps); err != nil {
+		t.Fatalf("failed to create PermissionSet: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), ps) })
+
 	policy := makePolicy(t, "valid-policy", ns, securityv1alpha1.RBACPolicySpec{
 		SubjectScope:            securityv1alpha1.SubjectScopePlatform,
 		EnforcementMode:         securityv1alpha1.EnforcementModeStrict,
@@ -151,6 +188,20 @@ func TestReconciler_ValidPolicySetsValidConditionTrue(t *testing.T) {
 // ends up with RBACPolicyDegraded=False.
 func TestReconciler_ValidPolicySetsNotDegraded(t *testing.T) {
 	ns := "default"
+	// Create the PermissionSet first (Session 4: existence check now required).
+	ps := &securityv1alpha1.PermissionSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "tenant-max", Namespace: ns},
+		Spec: securityv1alpha1.PermissionSetSpec{
+			Permissions: []securityv1alpha1.PermissionRule{
+				{Resources: []string{"configmaps"}, Verbs: []string{"get", "list"}},
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), ps); err != nil {
+		t.Fatalf("failed to create PermissionSet: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), ps) })
+
 	policy := makePolicy(t, "valid-not-degraded", ns, securityv1alpha1.RBACPolicySpec{
 		SubjectScope:            securityv1alpha1.SubjectScopeTenant,
 		EnforcementMode:         securityv1alpha1.EnforcementModeAudit,
@@ -251,6 +302,71 @@ func TestReconciler_ObservedGenerationAdvances(t *testing.T) {
 	})
 	if !ok {
 		t.Error("timed out waiting for ObservedGeneration to match Generation")
+	}
+}
+
+// TestReconciler_MissingPermissionSetCausesNotFound verifies that a valid RBACPolicy
+// whose MaximumPermissionSetRef references a non-existent PermissionSet reaches
+// RBACPolicyValid=False with reason=PermissionSetNotFound. When the PermissionSet
+// is subsequently created, the next reconcile (triggered by the 30s requeue) sets
+// RBACPolicyValid=True.
+func TestReconciler_MissingPermissionSetCausesNotFound(t *testing.T) {
+	ns := "default"
+	// Create a structurally valid policy referencing a nonexistent PermissionSet.
+	policy := makePolicy(t, "missing-permset", ns, securityv1alpha1.RBACPolicySpec{
+		SubjectScope:            securityv1alpha1.SubjectScopeTenant,
+		EnforcementMode:         securityv1alpha1.EnforcementModeStrict,
+		AllowedClusters:         []string{"ccs-test"},
+		MaximumPermissionSetRef: "nonexistent-set",
+	})
+
+	nn := types.NamespacedName{Name: policy.Name, Namespace: ns}
+
+	// Step 1: wait for PermissionSetNotFound condition.
+	ok := poll(t, 10*time.Second, func() bool {
+		got := &securityv1alpha1.RBACPolicy{}
+		if err := k8sClient.Get(context.Background(), nn, got); err != nil {
+			return false
+		}
+		c := findCond(got.Status.Conditions, securityv1alpha1.ConditionTypeRBACPolicyValid)
+		return c != nil &&
+			c.Status == metav1.ConditionFalse &&
+			c.Reason == securityv1alpha1.ReasonPermissionSetNotFound
+	})
+	if !ok {
+		got := &securityv1alpha1.RBACPolicy{}
+		_ = k8sClient.Get(context.Background(), nn, got)
+		t.Fatalf("timed out waiting for PermissionSetNotFound condition; conditions: %v", got.Status.Conditions)
+	}
+
+	// Step 2: create the PermissionSet.
+	ps := &securityv1alpha1.PermissionSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "nonexistent-set", Namespace: ns},
+		Spec: securityv1alpha1.PermissionSetSpec{
+			Permissions: []securityv1alpha1.PermissionRule{
+				{Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), ps); err != nil {
+		t.Fatalf("failed to create PermissionSet: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), ps) })
+
+	// Step 3: wait up to 40 seconds for the next reconcile (30s requeue ceiling)
+	// to pick up the newly created PermissionSet and set RBACPolicyValid=True.
+	ok = poll(t, 40*time.Second, func() bool {
+		got := &securityv1alpha1.RBACPolicy{}
+		if err := k8sClient.Get(context.Background(), nn, got); err != nil {
+			return false
+		}
+		c := findCond(got.Status.Conditions, securityv1alpha1.ConditionTypeRBACPolicyValid)
+		return c != nil && c.Status == metav1.ConditionTrue
+	})
+	if !ok {
+		got := &securityv1alpha1.RBACPolicy{}
+		_ = k8sClient.Get(context.Background(), nn, got)
+		t.Errorf("timed out waiting for RBACPolicyValid=True after PermissionSet created; conditions: %v", got.Status.Conditions)
 	}
 }
 

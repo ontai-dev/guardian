@@ -83,12 +83,44 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Step D — Validate the spec. Pure in-process — no API calls, no Jobs.
 	validationResult := ValidateRBACPolicySpec(policy.Spec)
 
-	// TODO(session-4): after PermissionSet types are defined, add an existence check
-	// here for policy.Spec.MaximumPermissionSetRef. Fetch the referenced PermissionSet
-	// CR. If not found: call SetCondition with type=RBACPolicyDegraded, reason=
-	// ReasonPermissionSetNotFound, and return without requeue. This check is a
-	// separate concern from structural validation and must use its own condition
-	// reason. The structural validation above already verified the ref is non-empty.
+	// Step D2 — PermissionSet existence check (deferred from Session 3).
+	// Structural validation (Step D) already verified MaximumPermissionSetRef is non-empty.
+	// Here we verify the referenced PermissionSet CR actually exists.
+	// This is a separate concern from structural validation and uses its own condition reason.
+	if validationResult.Valid {
+		ps := &securityv1alpha1.PermissionSet{}
+		psKey := client.ObjectKey{Name: policy.Spec.MaximumPermissionSetRef, Namespace: policy.Namespace}
+		if err := r.Client.Get(ctx, psKey, ps); err != nil {
+			if apierrors.IsNotFound(err) {
+				msg := fmt.Sprintf("PermissionSet %q not found in namespace %q.",
+					policy.Spec.MaximumPermissionSetRef, policy.Namespace)
+				securityv1alpha1.SetCondition(
+					&policy.Status.Conditions,
+					securityv1alpha1.ConditionTypeRBACPolicyValid,
+					metav1.ConditionFalse,
+					securityv1alpha1.ReasonPermissionSetNotFound,
+					msg,
+					policy.Generation,
+				)
+				securityv1alpha1.SetCondition(
+					&policy.Status.Conditions,
+					securityv1alpha1.ConditionTypeRBACPolicyDegraded,
+					metav1.ConditionTrue,
+					securityv1alpha1.ReasonPermissionSetNotFound,
+					msg,
+					policy.Generation,
+				)
+				policy.Status.ValidationSummary = "Waiting: PermissionSet not found."
+				r.Recorder.Event(policy, corev1.EventTypeWarning, "PermissionSetNotFound", msg)
+				logger.Info("RBACPolicy references missing PermissionSet",
+					"name", policy.Name, "namespace", policy.Namespace,
+					"permissionSetRef", policy.Spec.MaximumPermissionSetRef)
+				// Requeue after 30 seconds — the PermissionSet may be created soon.
+				return ctrl.Result{RequeueAfter: 30e9}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("failed to get PermissionSet %s: %w", psKey, err)
+		}
+	}
 
 	// Step E — Handle invalid spec.
 	if !validationResult.Valid {

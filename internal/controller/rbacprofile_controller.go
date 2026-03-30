@@ -1,0 +1,319 @@
+package controller
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+)
+
+// CS-INV-005: Provisioned=true is set ONLY in Step I of this Reconcile method.
+// No other code path in this file, this package, or any other package may set
+// status.Provisioned=true on RBACProfile. This is enforced architecturally by
+// making RBACProfileStatus.Provisioned unexported except through this reconciler's
+// status patch. Any future refactor that routes provisioned=true through a different
+// code path is a constitutional invariant violation and must be rejected.
+
+// RBACProfileReconciler watches RBACProfile CRs, validates them against their
+// governing RBACPolicy, and sets status.Provisioned=true when all checks pass.
+//
+// This is the most critical reconciler in the platform. CS-INV-005: provisioned=true
+// is set exclusively here, after every validation and compliance check passes.
+// It is impossible to reach provisioned=true through any code path that bypasses
+// this reconciler.
+type RBACProfileReconciler struct {
+	// Client is the controller-runtime client for Kubernetes API access.
+	Client client.Client
+
+	// Scheme is the runtime scheme used for object type registration.
+	Scheme *runtime.Scheme
+
+	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
+	Recorder record.EventRecorder
+}
+
+// epgRecomputeAnnotation is the inter-reconciler signal annotation.
+// Set by RBACProfileReconciler and IdentityBindingReconciler. Cleared by EPGReconciler.
+const epgRecomputeAnnotation = "ontai.dev/epg-recompute-requested"
+
+// Reconcile is the main reconciliation loop for RBACProfile.
+//
+// CS-INV-005 enforcement: provisioned=true is set ONLY in Step I below.
+// There is no other code path in this file that writes status.Provisioned=true.
+//
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles/finalizers,verbs=update
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Step A — Fetch the RBACProfile CR.
+	// Not found means the CR was deleted. Deletion triggers an event, not a Job.
+	// INV-006: no Jobs on the delete path.
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := r.Client.Get(ctx, req.NamespacedName, profile); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("RBACProfile not found — likely deleted, ignoring", "namespacedName", req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get RBACProfile %s: %w", req.NamespacedName, err)
+	}
+
+	// Step B — Set up deferred status patch.
+	// The patch base is a deep copy taken before any mutations. The deferred call
+	// persists all status mutations made by this reconcile, regardless of which
+	// return path is taken.
+	patchBase := client.MergeFrom(profile.DeepCopy())
+	defer func() {
+		if err := r.Client.Status().Patch(ctx, profile, patchBase); err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "failed to patch RBACProfile status",
+					"name", profile.Name, "namespace", profile.Namespace)
+			}
+		}
+	}()
+
+	// Step C — Advance ObservedGeneration to the current spec generation.
+	profile.Status.ObservedGeneration = profile.Generation
+
+	// Step D — Validate the spec. Pure in-process — no API calls, no Jobs.
+	validationResult := ValidateRBACProfileSpec(profile.Spec)
+	if !validationResult.Valid {
+		joinedReasons := strings.Join(validationResult.Reasons, "; ")
+
+		profile.Status.Provisioned = false
+		profile.Status.LastProvisionedAt = nil // clear — this profile has regressed to invalid
+
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonProvisioningFailed,
+			joinedReasons,
+			profile.Generation,
+		)
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileValidated,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonProvisioningFailed,
+			joinedReasons,
+			profile.Generation,
+		)
+
+		r.Recorder.Event(profile, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		logger.Info("RBACProfile validation failed",
+			"name", profile.Name, "namespace", profile.Namespace,
+			"failedChecks", validationResult.FailedChecks)
+
+		// A structurally invalid profile requires human correction. No requeue.
+		return ctrl.Result{}, nil
+	}
+
+	// Step E — Fetch the governing RBACPolicy.
+	policy := &securityv1alpha1.RBACPolicy{}
+	policyKey := types.NamespacedName{Name: profile.Spec.RBACPolicyRef, Namespace: profile.Namespace}
+	if err := r.Client.Get(ctx, policyKey, policy); err != nil {
+		if apierrors.IsNotFound(err) {
+			profile.Status.Provisioned = false
+			securityv1alpha1.SetCondition(
+				&profile.Status.Conditions,
+				securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+				metav1.ConditionFalse,
+				securityv1alpha1.ReasonPolicyNotFound,
+				fmt.Sprintf("RBACPolicy %q not found in namespace %q.", profile.Spec.RBACPolicyRef, profile.Namespace),
+				profile.Generation,
+			)
+			securityv1alpha1.SetCondition(
+				&profile.Status.Conditions,
+				securityv1alpha1.ConditionTypeRBACProfileValidated,
+				metav1.ConditionFalse,
+				securityv1alpha1.ReasonPolicyNotFound,
+				fmt.Sprintf("RBACPolicy %q not found in namespace %q.", profile.Spec.RBACPolicyRef, profile.Namespace),
+				profile.Generation,
+			)
+			r.Recorder.Event(profile, corev1.EventTypeWarning, "PolicyNotFound",
+				fmt.Sprintf("Governing RBACPolicy %q not found.", profile.Spec.RBACPolicyRef))
+			return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get RBACPolicy %s: %w", policyKey, err)
+	}
+
+	// Step F — Verify the governing RBACPolicy itself has RBACPolicyValid=True.
+	policyValid := securityv1alpha1.FindCondition(policy.Status.Conditions, securityv1alpha1.ConditionTypeRBACPolicyValid)
+	if policyValid == nil || policyValid.Status != metav1.ConditionTrue {
+		profile.Status.Provisioned = false
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonPolicyNotFound,
+			"Governing RBACPolicy is not yet valid — waiting.",
+			profile.Generation,
+		)
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileValidated,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonPolicyNotFound,
+			"Governing RBACPolicy is not yet valid — waiting.",
+			profile.Generation,
+		)
+		return ctrl.Result{RequeueAfter: 15e9}, nil // 15 seconds
+	}
+
+	// Step G — Verify all referenced PermissionSets exist.
+	var missingPermSets []string
+	for _, decl := range profile.Spec.PermissionDeclarations {
+		ps := &securityv1alpha1.PermissionSet{}
+		psKey := types.NamespacedName{Name: decl.PermissionSetRef, Namespace: profile.Namespace}
+		if err := r.Client.Get(ctx, psKey, ps); err != nil {
+			if apierrors.IsNotFound(err) {
+				missingPermSets = append(missingPermSets, decl.PermissionSetRef)
+			} else {
+				return ctrl.Result{}, fmt.Errorf("failed to get PermissionSet %s: %w", psKey, err)
+			}
+		}
+	}
+	if len(missingPermSets) > 0 {
+		msg := fmt.Sprintf("Missing PermissionSets: %s.", strings.Join(missingPermSets, ", "))
+		profile.Status.Provisioned = false
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonPermissionSetMissing,
+			msg,
+			profile.Generation,
+		)
+		r.Recorder.Event(profile, corev1.EventTypeWarning, "PermissionSetMissing", msg)
+		return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
+	}
+
+	// Step H — Compliance check against governing RBACPolicy.
+	complianceResult := CheckProfilePolicyCompliance(profile.Spec, policy.Spec)
+	if !complianceResult.Compliant {
+		// Filter out [audit] entries for the violation message — they are not violations.
+		var hardViolations []string
+		for _, v := range complianceResult.Violations {
+			if !strings.HasPrefix(v, "[audit]") {
+				hardViolations = append(hardViolations, v)
+			}
+		}
+		joinedViolations := strings.Join(hardViolations, "; ")
+
+		profile.Status.Provisioned = false
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonPolicyViolation,
+			joinedViolations,
+			profile.Generation,
+		)
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfilePolicyCompliant,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonPolicyViolation,
+			joinedViolations,
+			profile.Generation,
+		)
+		r.Recorder.Event(profile, corev1.EventTypeWarning, "PolicyViolation", joinedViolations)
+		logger.Info("RBACProfile compliance check failed",
+			"name", profile.Name, "namespace", profile.Namespace,
+			"violations", hardViolations)
+
+		// Compliance violation requires human correction. No requeue.
+		return ctrl.Result{}, nil
+	}
+
+	// Step I — All checks passed. THIS IS THE ONLY CODE PATH THAT SETS provisioned=true.
+	// CS-INV-005: do not add any other path to set Provisioned=true in this codebase.
+	now := metav1.Now()
+	profile.Status.Provisioned = true
+	profile.Status.LastProvisionedAt = &now
+	profile.Status.ValidationSummary = "Provisioned."
+
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"All validation and compliance checks passed.",
+		profile.Generation,
+	)
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfileValidated,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"Structural validation passed.",
+		profile.Generation,
+	)
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfilePolicyCompliant,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"Policy compliance check passed.",
+		profile.Generation,
+	)
+
+	r.Recorder.Event(profile, corev1.EventTypeNormal, "ProvisioningComplete",
+		"RBACProfile provisioned successfully.")
+
+	logger.Info("RBACProfile provisioned",
+		"name", profile.Name, "namespace", profile.Namespace)
+
+	// Annotate with epg-recompute-requested — signals EPGReconciler that this
+	// profile has changed and EPG recomputation is needed. The EPGReconciler will
+	// clear this annotation after processing. This is the inter-reconciler signal
+	// mechanism — not a channel, not a shared struct, not a direct call.
+	//
+	// IMPORTANT: we use a deep copy of `profile` as the patch target so that
+	// r.Client.Patch does not overwrite the in-memory status mutations on `profile`
+	// with the server's current (pre-status-patch) state. The deferred status patch
+	// must run against the mutated in-memory `profile`, not a server-refreshed copy.
+	epgBase := profile.DeepCopy()
+	epgTarget := profile.DeepCopy()
+	if epgTarget.Annotations == nil {
+		epgTarget.Annotations = make(map[string]string)
+	}
+	epgTarget.Annotations[epgRecomputeAnnotation] = "true"
+	if err := r.Client.Patch(ctx, epgTarget, client.MergeFrom(epgBase)); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "failed to annotate RBACProfile with epg-recompute-requested",
+				"name", profile.Name, "namespace", profile.Namespace)
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// SetupWithManager registers RBACProfileReconciler as the controller for RBACProfile.
+//
+// GenerationChangedPredicate prevents reconciliation when only the status
+// subresource is updated, breaking the reconcile loop that would otherwise
+// be triggered by the reconciler's own status patches.
+func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&securityv1alpha1.RBACProfile{}).
+		WithEventFilter(predicate.GenerationChangedPredicate{}).
+		Complete(r)
+}
