@@ -3,6 +3,9 @@
 // This package is the Kubernetes API contract for guardian. All CRD types are
 // registered here. Breaking changes require a version bump to v1alpha2 or v1beta1
 // and coordination with all operators that reference these types.
+//
+// +groupName=security.ontai.dev
+// +kubebuilder:object:generate=true
 package v1alpha1
 
 import (

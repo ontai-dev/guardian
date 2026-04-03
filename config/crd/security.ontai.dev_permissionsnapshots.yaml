@@ -2,6 +2,8 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
   name: permissionsnapshots.security.ontai.dev
 spec:
   group: security.ontai.dev
@@ -17,37 +19,60 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: PermissionSnapshot is a computed, versioned EPG for a specific target cluster.
-          Generated exclusively by the EPGReconciler. Never manually authored.
+        description: |-
+          PermissionSnapshot is a computed, versioned EPG for a specific target cluster.
+          Generated on any input change by the EPGReconciler. Never manually authored.
+          One per target cluster, replaced in-place on recomputation. guardian-schema.md §7.
         properties:
           apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
           spec:
-            description: PermissionSnapshotSpec defines the desired state of a PermissionSnapshot.
+            description: |-
+              PermissionSnapshotSpec defines the desired state of a PermissionSnapshot.
+              This CR is never manually authored — it is generated exclusively by the
+              EPGReconciler. guardian-schema.md §7.
             properties:
               generatedAt:
                 description: GeneratedAt is the timestamp when this snapshot was generated.
                 format: date-time
                 type: string
               principalPermissions:
-                description: PrincipalPermissions is the per-principal permission map for this cluster.
+                description: PrincipalPermissions is the per-principal permission
+                  map for this cluster.
                 items:
-                  description: PrincipalPermissionEntry is the per-principal permission entry.
+                  description: PrincipalPermissionEntry is the per-principal permission
+                    entry in a PermissionSnapshot.
                   properties:
                     allowedOperations:
-                      description: AllowedOperations is the list of allowed operations for this principal.
+                      description: AllowedOperations is the list of allowed operations
+                        for this principal.
                       items:
-                        description: AllowedOperation describes a single permitted operation.
+                        description: AllowedOperation describes a single permitted
+                          operation within the EPG.
                         properties:
                           apiGroup:
-                            description: APIGroup is the Kubernetes API group. Empty means core.
+                            description: |-
+                              APIGroup is the Kubernetes API group this operation applies to.
+                              Empty string means the core API group.
                             type: string
                           clusters:
-                            description: Clusters is the list of cluster names this operation applies to.
+                            description: Clusters is the list of cluster names this
+                              operation applies to.
                             items:
                               type: string
                             type: array
@@ -55,7 +80,8 @@ spec:
                             description: Resource is the Kubernetes resource type.
                             type: string
                           verbs:
-                            description: Verbs is the list of permitted operations.
+                            description: Verbs is the list of permitted operations
+                              on the resource.
                             items:
                               type: string
                             type: array
@@ -75,7 +101,9 @@ spec:
                 description: TargetCluster is the cluster name this snapshot governs.
                 type: string
               version:
-                description: Version is the monotonically increasing version string (ISO8601 timestamp).
+                description: |-
+                  Version is the monotonically increasing version string.
+                  Format: ISO8601 timestamp at generation time, e.g. "2026-03-30T12:00:00Z".
                 type: string
             required:
             - generatedAt
@@ -83,22 +111,27 @@ spec:
             - version
             type: object
           status:
-            description: PermissionSnapshotStatus defines the observed state of a PermissionSnapshot.
+            description: PermissionSnapshotStatus defines the observed state of a
+              PermissionSnapshot.
             properties:
               drift:
-                description: Drift is true when lastAckedVersion != expectedVersion.
+                description: Drift is true when LastAckedVersion != ExpectedVersion.
                 type: boolean
               expectedVersion:
-                description: ExpectedVersion is the version the management cluster expects agents to acknowledge.
+                description: ExpectedVersion is the version the management cluster
+                  expects agents to acknowledge.
                 type: string
               lastAckedVersion:
-                description: LastAckedVersion is the version last acknowledged by the target cluster agent.
+                description: LastAckedVersion is the version last acknowledged by
+                  the target cluster agent.
                 type: string
               lastSeen:
                 description: LastSeen is the timestamp of the most recent agent acknowledgement.
                 format: date-time
                 type: string
               observedGeneration:
+                description: ObservedGeneration is the generation of the PermissionSnapshot
+                  spec last reconciled.
                 format: int64
                 type: integer
             type: object
