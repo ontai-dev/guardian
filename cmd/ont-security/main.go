@@ -114,8 +114,11 @@ func main() {
 	// CS-INV-001: admission webhook is the enforcement mechanism; it must be registered
 	// before the manager starts. CS-INV-006: leader election is enforced by the manager —
 	// the webhook server becomes active only after the leader lock is acquired.
+	// INV-020: the bootstrap RBAC window starts open here and is permanently closed
+	// inside Register() — from that point all RBAC resources require the ownership annotation.
+	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	if err := webhookServer.Register(); err != nil {
+	if err := webhookServer.Register(bootstrapWindow); err != nil {
 		setupLog.Error(err, "unable to register admission webhook")
 		os.Exit(1)
 	}

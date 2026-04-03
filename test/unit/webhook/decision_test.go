@@ -1,17 +1,19 @@
-// Package webhook_test contains unit tests for the EvaluateAdmission pure function.
+// Package webhook_test contains unit tests for the EvaluateAdmission pure function
+// and the BootstrapWindow type.
 //
 // These tests verify all decision branches in decision.go: kind filtering,
-// annotation enforcement, and the structural presence of the TODO(session-8)
-// bootstrap window stub.
+// annotation enforcement, bootstrap RBAC window behavior (INV-020, CS-INV-004),
+// and BootstrapWindow state transitions.
 package webhook_test
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/ontai-dev/guardian/internal/webhook"
 )
+
+// --- EvaluateAdmission: non-intercepted kinds ---
 
 // Test 1 — Non-intercepted kind: always allowed regardless of annotations.
 func TestEvaluateAdmission_NonInterceptedKind_Allowed(t *testing.T) {
@@ -27,6 +29,8 @@ func TestEvaluateAdmission_NonInterceptedKind_Allowed(t *testing.T) {
 		t.Errorf("expected empty reason for allowed decision; got %q", decision.Reason)
 	}
 }
+
+// --- EvaluateAdmission: annotation enforcement (bootstrap window closed) ---
 
 // Test 2 — Role CREATE without annotation: denied.
 func TestEvaluateAdmission_Role_NoAnnotation_Denied(t *testing.T) {
@@ -179,15 +183,126 @@ func TestEvaluateAdmission_ConfigMap_Allowed(t *testing.T) {
 	}
 }
 
-// Test 13 — Structural: TODO(session-8) bootstrap window stub is present in decision.go.
-// This ensures the bootstrap window implementation point is not accidentally removed
-// before Session 8 wires the actual window check. CS-INV-004.
-func TestDecisionGo_BootstrapWindowStub_Present(t *testing.T) {
-	src, err := os.ReadFile("../../../internal/webhook/decision.go")
-	if err != nil {
-		t.Fatalf("failed to read decision.go: %v", err)
+// --- BootstrapWindow state tests ---
+
+// Test 13 — BootstrapWindow starts open immediately after construction. INV-020.
+func TestBootstrapWindow_StartsOpen(t *testing.T) {
+	w := webhook.NewBootstrapWindow()
+	if !w.IsOpen() {
+		t.Error("BootstrapWindow must be open on construction; INV-020")
 	}
-	if !strings.Contains(string(src), "TODO(session-8)") {
-		t.Error("decision.go must contain TODO(session-8) bootstrap window stub; CS-INV-004")
+}
+
+// Test 14 — BootstrapWindow.Close permanently closes the window. INV-020.
+func TestBootstrapWindow_Close_ClosesWindow(t *testing.T) {
+	w := webhook.NewBootstrapWindow()
+	w.Close()
+	if w.IsOpen() {
+		t.Error("BootstrapWindow.IsOpen() must return false after Close(); INV-020")
+	}
+}
+
+// Test 15 — BootstrapWindow.Close is idempotent. Calling it multiple times must
+// not panic and must leave the window closed. INV-020.
+func TestBootstrapWindow_Close_Idempotent(t *testing.T) {
+	w := webhook.NewBootstrapWindow()
+	w.Close()
+	w.Close() // must not panic
+	if w.IsOpen() {
+		t.Error("BootstrapWindow must remain closed after multiple Close() calls; INV-020")
+	}
+}
+
+// Test 16 — BootstrapWindow cannot be re-opened once closed. There is no
+// re-open method; the window is permanently closed by design. INV-020.
+func TestBootstrapWindow_OnceClosedStaysClosed(t *testing.T) {
+	w := webhook.NewBootstrapWindow()
+	w.Close()
+	// No re-open path exists. Verify the closed state is stable.
+	for range 3 {
+		if w.IsOpen() {
+			t.Error("BootstrapWindow must not re-open after Close(); INV-020")
+		}
+	}
+}
+
+// --- EvaluateAdmission: bootstrap window open ---
+
+// Test 17 — Bootstrap window open: intercepted RBAC without annotation is allowed.
+// During the bootstrap window, the conductor enable phase applies guardian's own
+// RBAC before the ownership annotation can be set. INV-020, CS-INV-004.
+func TestEvaluateAdmission_BootstrapWindowOpen_Role_NoAnnotation_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:                "Role",
+		Operation:           webhook.OperationCreate,
+		Annotations:         nil,
+		BootstrapWindowOpen: true,
+	})
+	if !decision.Allowed {
+		t.Errorf("expected Allowed=true for Role during bootstrap window; got reason %q", decision.Reason)
+	}
+}
+
+// Test 18 — Bootstrap window open: all intercepted RBAC kinds are allowed without
+// annotation. The window opens the path for all five intercepted kinds equally.
+// INV-020, CS-INV-004.
+func TestEvaluateAdmission_BootstrapWindowOpen_AllInterceptedKinds_Allowed(t *testing.T) {
+	kinds := []string{"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding", "ServiceAccount"}
+	for _, kind := range kinds {
+		decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+			Kind:                kind,
+			Operation:           webhook.OperationCreate,
+			BootstrapWindowOpen: true,
+		})
+		if !decision.Allowed {
+			t.Errorf("kind %q: expected Allowed=true during bootstrap window; got reason %q",
+				kind, decision.Reason)
+		}
+	}
+}
+
+// Test 19 — Bootstrap window open: non-intercepted kinds remain allowed (unchanged).
+// The window does not alter behavior for kinds outside InterceptedKinds.
+func TestEvaluateAdmission_BootstrapWindowOpen_NonInterceptedKind_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:                "Deployment",
+		Operation:           webhook.OperationCreate,
+		BootstrapWindowOpen: true,
+	})
+	if !decision.Allowed {
+		t.Errorf("expected Allowed=true for Deployment during bootstrap window; got reason %q",
+			decision.Reason)
+	}
+}
+
+// Test 20 — Bootstrap window closed: intercepted RBAC without annotation is denied.
+// This is the normal enforcement path — BootstrapWindowOpen=false is identical to
+// omitting the field (zero value). CS-INV-001, INV-020.
+func TestEvaluateAdmission_BootstrapWindowClosed_NoAnnotation_Denied(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:                "Role",
+		Operation:           webhook.OperationCreate,
+		Annotations:         nil,
+		BootstrapWindowOpen: false,
+	})
+	if decision.Allowed {
+		t.Error("expected Allowed=false when bootstrap window closed and no annotation; CS-INV-001")
+	}
+}
+
+// Test 21 — Bootstrap window closed: correct annotation is still allowed.
+// Closing the window does not affect the normal ownership-annotated resource path.
+func TestEvaluateAdmission_BootstrapWindowClosed_CorrectAnnotation_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "ClusterRole",
+		Operation: webhook.OperationCreate,
+		Annotations: map[string]string{
+			webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue,
+		},
+		BootstrapWindowOpen: false,
+	})
+	if !decision.Allowed {
+		t.Errorf("expected Allowed=true for annotated ClusterRole after window closes; got reason %q",
+			decision.Reason)
 	}
 }

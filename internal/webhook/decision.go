@@ -7,6 +7,8 @@
 // CS-INV-001: the admission webhook is the enforcement mechanism.
 package webhook
 
+import "sync/atomic"
+
 // AnnotationRBACOwner is the annotation key that all RBAC resources on the
 // management cluster must carry. Any resource arriving at admission without
 // this annotation set to AnnotationRBACOwnerValue is rejected. CS-INV-001.
@@ -37,10 +39,44 @@ const (
 	OperationUpdate AdmissionOperation = "UPDATE"
 )
 
+// BootstrapWindow tracks whether the bootstrap RBAC window is currently open.
+// The window starts open on construction and closes permanently when Close is
+// called. All methods are safe for concurrent use from multiple goroutines.
+//
+// The bootstrap RBAC window exists to allow intercepted RBAC resources through
+// admission before guardian's webhook is fully operational. The window closes
+// permanently when the webhook is registered. INV-020, CS-INV-004.
+type BootstrapWindow struct {
+	open atomic.Bool
+}
+
+// NewBootstrapWindow returns a BootstrapWindow in the open state.
+// The caller must call Close exactly once — when the admission webhook is
+// registered and the bootstrap phase is complete. INV-020.
+func NewBootstrapWindow() *BootstrapWindow {
+	w := &BootstrapWindow{}
+	w.open.Store(true)
+	return w
+}
+
+// IsOpen reports whether the bootstrap RBAC window is currently open.
+// Safe for concurrent use.
+func (w *BootstrapWindow) IsOpen() bool {
+	return w.open.Load()
+}
+
+// Close permanently closes the bootstrap RBAC window. After Close returns,
+// IsOpen always returns false. Close is idempotent and safe for concurrent use.
+// INV-020: the window closes permanently when guardian's admission webhook
+// becomes operational.
+func (w *BootstrapWindow) Close() {
+	w.open.Store(false)
+}
+
 // AdmissionRequest is the input to EvaluateAdmission. It contains only the fields
 // required for the admission decision, decoupled from any Kubernetes API machinery.
-// This type is designed to be constructed by rbac_handler.go from the raw admission
-// request, keeping the decision logic free of server imports.
+// This type is constructed by rbac_handler.go from the raw admission request,
+// keeping the decision logic free of server imports.
 type AdmissionRequest struct {
 	// Kind is the resource kind being admitted (e.g., "Role", "ClusterRole").
 	Kind string
@@ -49,6 +85,12 @@ type AdmissionRequest struct {
 	// Annotations are the annotations from the incoming object's metadata.
 	// May be nil if the object has no annotations.
 	Annotations map[string]string
+	// BootstrapWindowOpen is true when the bootstrap RBAC window is open.
+	// Set by the admission handler from BootstrapWindow.IsOpen before calling
+	// EvaluateAdmission. When true, intercepted RBAC resources are admitted
+	// unconditionally to allow guardian's own bootstrap RBAC to land before
+	// ownership annotation is applied. INV-020, CS-INV-004.
+	BootstrapWindowOpen bool
 }
 
 // AdmissionDecision is the result of EvaluateAdmission.
@@ -65,10 +107,9 @@ type AdmissionDecision struct {
 //
 // Evaluation order:
 //  1. If Kind is not in InterceptedKinds, allow unconditionally.
-//  2. TODO(session-8): bootstrap RBAC window check — if the window is open and the
-//     resource matches the bootstrap RBACPolicy, allow it and continue. The window
-//     closes permanently when guardian's webhook becomes operational.
-//     INV-020, CS-INV-004. Bootstrap window state must be thread-safe.
+//  2. If the bootstrap RBAC window is open, allow unconditionally. The window is
+//     open from guardian startup until the admission webhook is registered.
+//     It closes permanently on registration. INV-020, CS-INV-004.
 //  3. If annotation ontai.dev/rbac-owner=guardian is present, allow.
 //  4. Otherwise, reject with a structured error message.
 func EvaluateAdmission(req AdmissionRequest) AdmissionDecision {
@@ -76,12 +117,15 @@ func EvaluateAdmission(req AdmissionRequest) AdmissionDecision {
 		return AdmissionDecision{Allowed: true}
 	}
 
-	// TODO(session-8): evaluate bootstrap RBAC window. If the window is open and this
-	// resource matches the bootstrap RBACPolicy, allow it and continue. The window
-	// closes permanently once guardian's admission webhook becomes operational.
-	// INV-020, CS-INV-004. Bootstrap window state must be thread-safe (accessed from
-	// the HTTP handler goroutine pool). This stub is intentionally left unimplemented;
-	// the window is treated as permanently closed until Session 8.
+	// Bootstrap RBAC window: admit intercepted RBAC resources unconditionally
+	// while the window is open. The window is open from guardian startup until
+	// the admission webhook server is registered. It then closes permanently.
+	// Resources admitted through this window are reconciled by guardian on startup:
+	// compliant resources are ownership-annotated; non-compliant are flagged.
+	// INV-020, CS-INV-004.
+	if req.BootstrapWindowOpen {
+		return AdmissionDecision{Allowed: true}
+	}
 
 	if req.Annotations[AnnotationRBACOwner] == AnnotationRBACOwnerValue {
 		return AdmissionDecision{Allowed: true}

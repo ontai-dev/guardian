@@ -99,9 +99,13 @@ func TestMain(m *testing.M) {
 		panic("failed to create manager: " + err.Error())
 	}
 
-	// Register the RBAC admission webhook.
+	// Register the RBAC admission webhook. The bootstrap window is created open
+	// and permanently closed inside Register() — by the time the webhook server
+	// begins serving, the window is closed and normal annotation enforcement applies.
+	// INV-020, CS-INV-004.
+	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	if err := webhookServer.Register(); err != nil {
+	if err := webhookServer.Register(bootstrapWindow); err != nil {
 		panic("failed to register admission webhook: " + err.Error())
 	}
 

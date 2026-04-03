@@ -15,7 +15,8 @@ import (
 // keeping the policy logic free of controller-runtime server machinery.
 // CS-INV-001, CS-INV-006.
 type RBACAdmissionHandler struct {
-	decoder *admission.Decoder
+	decoder         *admission.Decoder
+	bootstrapWindow *BootstrapWindow
 }
 
 // partialObject is used for partial JSON unmarshalling of the admitted resource.
@@ -28,7 +29,8 @@ type partialObject struct {
 
 // Handle implements admission.Handler.
 // It extracts the resource kind and annotations from the admission request,
-// delegates to EvaluateAdmission, and returns the appropriate response.
+// reads the current bootstrap window state, delegates to EvaluateAdmission,
+// and returns the appropriate response.
 func (h *RBACAdmissionHandler) Handle(_ context.Context, req admission.Request) admission.Response {
 	var obj partialObject
 	if err := json.Unmarshal(req.Object.Raw, &obj); err != nil {
@@ -36,9 +38,10 @@ func (h *RBACAdmissionHandler) Handle(_ context.Context, req admission.Request) 
 	}
 
 	decision := EvaluateAdmission(AdmissionRequest{
-		Kind:        req.Kind.Kind,
-		Operation:   AdmissionOperation(req.Operation),
-		Annotations: obj.Metadata.Annotations,
+		Kind:                req.Kind.Kind,
+		Operation:           AdmissionOperation(req.Operation),
+		Annotations:         obj.Metadata.Annotations,
+		BootstrapWindowOpen: h.bootstrapWindow.IsOpen(),
 	})
 
 	if decision.Allowed {
