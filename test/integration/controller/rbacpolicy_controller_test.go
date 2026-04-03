@@ -164,7 +164,7 @@ func TestReconciler_ValidPolicySetsValidConditionTrue(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "platform-max", Namespace: ns},
 		Spec: securityv1alpha1.PermissionSetSpec{
 			Permissions: []securityv1alpha1.PermissionRule{
-				{Resources: []string{"pods"}, Verbs: []string{"get"}},
+				{Resources: []string{"pods"}, Verbs: []securityv1alpha1.Verb{"get"}},
 			},
 		},
 	}
@@ -203,7 +203,7 @@ func TestReconciler_ValidPolicySetsNotDegraded(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "tenant-max", Namespace: ns},
 		Spec: securityv1alpha1.PermissionSetSpec{
 			Permissions: []securityv1alpha1.PermissionRule{
-				{Resources: []string{"configmaps"}, Verbs: []string{"get", "list"}},
+				{Resources: []string{"configmaps"}, Verbs: []securityv1alpha1.Verb{"get", "list"}},
 			},
 		},
 	}
@@ -354,7 +354,7 @@ func TestReconciler_MissingPermissionSetCausesNotFound(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "nonexistent-set", Namespace: ns},
 		Spec: securityv1alpha1.PermissionSetSpec{
 			Permissions: []securityv1alpha1.PermissionRule{
-				{Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
+				{Resources: []string{"pods"}, Verbs: []securityv1alpha1.Verb{"get", "list"}},
 			},
 		},
 	}

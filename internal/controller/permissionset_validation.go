@@ -72,7 +72,7 @@ func ValidatePermissionSetSpec(spec securityv1alpha1.PermissionSetSpec) Permissi
 
 		// Check 4 — Each verb must be a valid value.
 		for _, verb := range rule.Verbs {
-			if _, ok := validVerbs[verb]; !ok {
+			if _, ok := validVerbs[string(verb)]; !ok {
 				fail(fmt.Sprintf("permissions[%d].verbs contains invalid value %q; "+
 					"valid values: get, list, watch, create, update, patch, delete, deletecollection", i, verb))
 			}

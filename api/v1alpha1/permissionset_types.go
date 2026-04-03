@@ -4,6 +4,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Verb is a typed Kubernetes RBAC verb.
+// Valid values are the eight standard verbs: get, list, watch, create, update,
+// patch, delete, deletecollection. guardian-schema.md §7.
+//
+// +kubebuilder:validation:Enum=get;list;watch;create;update;patch;delete;deletecollection
+type Verb string
+
+const (
+	VerbGet              Verb = "get"
+	VerbList             Verb = "list"
+	VerbWatch            Verb = "watch"
+	VerbCreate           Verb = "create"
+	VerbUpdate           Verb = "update"
+	VerbPatch            Verb = "patch"
+	VerbDelete           Verb = "delete"
+	VerbDeleteCollection Verb = "deletecollection"
+)
+
 // PermissionRule defines a single permission rule within a PermissionSet.
 // Follows the Kubernetes RBAC rule model.
 type PermissionRule struct {
@@ -17,8 +35,8 @@ type PermissionRule struct {
 	Resources []string `json:"resources"`
 
 	// Verbs is the list of operations permitted on the resources.
-	// Valid values: get, list, watch, create, update, patch, delete, deletecollection.
-	Verbs []string `json:"verbs"`
+	// Each value must be one of the eight standard Kubernetes RBAC verbs.
+	Verbs []Verb `json:"verbs"`
 
 	// ResourceNames is an optional list of names of the resources this rule applies to.
 	// Empty means all resource names are allowed.

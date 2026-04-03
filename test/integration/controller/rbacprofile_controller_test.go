@@ -30,7 +30,7 @@ func makePermissionSet(t *testing.T, name, namespace string) *securityv1alpha1.P
 				{
 					APIGroups: []string{""},
 					Resources: []string{"pods", "services"},
-					Verbs:     []string{"get", "list", "watch"},
+					Verbs:     []securityv1alpha1.Verb{"get", "list", "watch"},
 				},
 			},
 		},

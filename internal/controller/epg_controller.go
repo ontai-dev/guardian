@@ -44,9 +44,9 @@ const (
 	epgDriftTriggerName = "drift-check"
 )
 
-// EPGReconciler watches RBACProfile, RBACPolicy, IdentityBinding, and PermissionSet.
-// It is triggered when the ontai.dev/epg-recompute-requested=true annotation is present
-// on any of these objects.
+// EPGReconciler watches RBACProfile, RBACPolicy, IdentityBinding, PermissionSet, and
+// IdentityProvider. It is triggered when the ontai.dev/epg-recompute-requested=true
+// annotation is present on any of these objects.
 //
 // On trigger, it performs a full EPG recomputation regardless of which object triggered,
 // using a fixed reconcile request key (security-system/epg-trigger). This collapses
@@ -58,6 +58,7 @@ const (
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=identitybindings,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=identityproviders,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshots/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsnapshotreceipts,verbs=get;list;watch
@@ -406,6 +407,16 @@ func (r *EPGReconciler) clearAnnotations(ctx context.Context) {
 		}
 		return items
 	})
+
+	// Clear from IdentityProviders.
+	var providers securityv1alpha1.IdentityProviderList
+	clearFromList(&providers, func() []client.Object {
+		items := make([]client.Object, len(providers.Items))
+		for i := range providers.Items {
+			items[i] = &providers.Items[i]
+		}
+		return items
+	})
 }
 
 // signalRecompute re-annotates an object with epg-recompute-requested=true so that
@@ -500,6 +511,7 @@ func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&securityv1alpha1.RBACPolicy{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.IdentityBinding{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.PermissionSet{}, fixedKey, builder.WithPredicates(filter)).
+		Watches(&securityv1alpha1.IdentityProvider{}, fixedKey, builder.WithPredicates(filter)).
 		// Drift-check triggers (all create/update events, no annotation filter).
 		Watches(&securityv1alpha1.PermissionSnapshotReceipt{}, driftKey).
 		Watches(&securityv1alpha1.PermissionSnapshot{}, driftKey).

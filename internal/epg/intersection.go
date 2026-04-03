@@ -48,7 +48,7 @@ func IntersectWithCeiling(declared, ceiling []securityv1alpha1.PermissionRule) [
 				ceilingVerbs := unionVerbSets(matching)
 
 				// Intersect declared verbs with ceiling verbs.
-				effectiveVerbs := verbIntersection(decl.Verbs, ceilingVerbs)
+				effectiveVerbs := verbIntersection(verbsToStrings(decl.Verbs), ceilingVerbs)
 				if len(effectiveVerbs) == 0 {
 					continue // no verb overlap — drop
 				}
@@ -120,10 +120,19 @@ func unionVerbSets(rules []securityv1alpha1.PermissionRule) map[string]struct{} 
 	union := make(map[string]struct{})
 	for _, r := range rules {
 		for _, v := range r.Verbs {
-			union[v] = struct{}{}
+			union[string(v)] = struct{}{}
 		}
 	}
 	return union
+}
+
+// verbsToStrings converts a []Verb slice to a []string slice for internal processing.
+func verbsToStrings(verbs []securityv1alpha1.Verb) []string {
+	s := make([]string, len(verbs))
+	for i, v := range verbs {
+		s[i] = string(v)
+	}
+	return s
 }
 
 // verbIntersection returns the intersection of declared verbs with the ceiling verb set.

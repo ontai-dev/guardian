@@ -155,7 +155,7 @@ func TestEPG_ProvisionedProfile_CreatesPermissionSnapshot(t *testing.T) {
 				{
 					APIGroups: []string{""},
 					Resources: []string{"pods"},
-					Verbs:     []string{"get", "list", "watch"},
+					Verbs:     []securityv1alpha1.Verb{"get", "list", "watch"},
 				},
 			},
 		},

@@ -15,7 +15,7 @@ func validPermissionSetSpec() securityv1alpha1.PermissionSetSpec {
 			{
 				APIGroups: []string{""},
 				Resources: []string{"pods"},
-				Verbs:     []string{"get", "list", "watch"},
+				Verbs:     []securityv1alpha1.Verb{"get", "list", "watch"},
 			},
 		},
 	}
@@ -68,7 +68,7 @@ func TestValidatePermissionSetSpec_EmptyResources(t *testing.T) {
 // Verbs slice fails.
 func TestValidatePermissionSetSpec_EmptyVerbs(t *testing.T) {
 	spec := validPermissionSetSpec()
-	spec.Permissions[0].Verbs = []string{}
+	spec.Permissions[0].Verbs = []securityv1alpha1.Verb{}
 
 	result := controller.ValidatePermissionSetSpec(spec)
 
@@ -84,7 +84,7 @@ func TestValidatePermissionSetSpec_EmptyVerbs(t *testing.T) {
 // fails and names the invalid value in the reason.
 func TestValidatePermissionSetSpec_InvalidVerb(t *testing.T) {
 	spec := validPermissionSetSpec()
-	spec.Permissions[0].Verbs = []string{"get", "superdelete"}
+	spec.Permissions[0].Verbs = []securityv1alpha1.Verb{"get", "superdelete"}
 
 	result := controller.ValidatePermissionSetSpec(spec)
 
@@ -99,11 +99,15 @@ func TestValidatePermissionSetSpec_InvalidVerb(t *testing.T) {
 // TestValidatePermissionSetSpec_AllValidVerbs verifies that all eight declared
 // valid verbs are individually accepted.
 func TestValidatePermissionSetSpec_AllValidVerbs(t *testing.T) {
-	validVerbs := []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"}
-	for _, verb := range validVerbs {
-		t.Run(verb, func(t *testing.T) {
+	allVerbs := []securityv1alpha1.Verb{
+		securityv1alpha1.VerbGet, securityv1alpha1.VerbList, securityv1alpha1.VerbWatch,
+		securityv1alpha1.VerbCreate, securityv1alpha1.VerbUpdate, securityv1alpha1.VerbPatch,
+		securityv1alpha1.VerbDelete, securityv1alpha1.VerbDeleteCollection,
+	}
+	for _, verb := range allVerbs {
+		t.Run(string(verb), func(t *testing.T) {
 			spec := validPermissionSetSpec()
-			spec.Permissions[0].Verbs = []string{verb}
+			spec.Permissions[0].Verbs = []securityv1alpha1.Verb{verb}
 
 			result := controller.ValidatePermissionSetSpec(spec)
 
@@ -119,8 +123,8 @@ func TestValidatePermissionSetSpec_AllValidVerbs(t *testing.T) {
 func TestValidatePermissionSetSpec_MultipleFailuresCollected(t *testing.T) {
 	spec := securityv1alpha1.PermissionSetSpec{
 		Permissions: []securityv1alpha1.PermissionRule{
-			{Resources: []string{}, Verbs: []string{}},        // fails resources + verbs
-			{Resources: []string{"pods"}, Verbs: []string{"badverb"}}, // fails verb
+			{Resources: []string{}, Verbs: []securityv1alpha1.Verb{}},                       // fails resources + verbs
+			{Resources: []string{"pods"}, Verbs: []securityv1alpha1.Verb{"badverb"}},        // fails verb
 		},
 	}
 

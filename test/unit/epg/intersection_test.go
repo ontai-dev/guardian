@@ -13,11 +13,20 @@ import (
 
 // helpers for intersection tests
 
+// toVerbs converts a []string to []securityv1alpha1.Verb for test convenience.
+func toVerbs(ss []string) []securityv1alpha1.Verb {
+	vs := make([]securityv1alpha1.Verb, len(ss))
+	for i, s := range ss {
+		vs[i] = securityv1alpha1.Verb(s)
+	}
+	return vs
+}
+
 func ceilRule(apiGroups, resources, verbs []string) securityv1alpha1.PermissionRule {
 	return securityv1alpha1.PermissionRule{
 		APIGroups: apiGroups,
 		Resources: resources,
-		Verbs:     verbs,
+		Verbs:     toVerbs(verbs),
 	}
 }
 
@@ -25,7 +34,7 @@ func ceilRuleWithNames(apiGroups, resources, verbs, names []string) securityv1al
 	return securityv1alpha1.PermissionRule{
 		APIGroups:     apiGroups,
 		Resources:     resources,
-		Verbs:         verbs,
+		Verbs:         toVerbs(verbs),
 		ResourceNames: names,
 	}
 }
@@ -34,7 +43,7 @@ func declRule(apiGroups, resources, verbs []string) securityv1alpha1.PermissionR
 	return securityv1alpha1.PermissionRule{
 		APIGroups: apiGroups,
 		Resources: resources,
-		Verbs:     verbs,
+		Verbs:     toVerbs(verbs),
 	}
 }
 
@@ -42,7 +51,7 @@ func declRuleWithNames(apiGroups, resources, verbs, names []string) securityv1al
 	return securityv1alpha1.PermissionRule{
 		APIGroups:     apiGroups,
 		Resources:     resources,
-		Verbs:         verbs,
+		Verbs:         toVerbs(verbs),
 		ResourceNames: names,
 	}
 }

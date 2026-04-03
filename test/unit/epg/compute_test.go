@@ -52,7 +52,7 @@ func coreRule(resource string, verbs []string) securityv1alpha1.PermissionRule {
 	return securityv1alpha1.PermissionRule{
 		APIGroups: []string{""},
 		Resources: []string{resource},
-		Verbs:     verbs,
+		Verbs:     toVerbs(verbs),
 	}
 }
 

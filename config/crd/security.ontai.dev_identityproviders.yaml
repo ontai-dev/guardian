@@ -4,25 +4,36 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.1
-  name: permissionsets.security.ontai.dev
+  name: identityproviders.security.ontai.dev
 spec:
   group: security.ontai.dev
   names:
-    kind: PermissionSet
-    listKind: PermissionSetList
-    plural: permissionsets
+    kind: IdentityProvider
+    listKind: IdentityProviderList
+    plural: identityproviders
     shortNames:
-    - ps
-    singular: permissionset
+    - idp
+    singular: identityprovider
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Valid")].status
+      name: Valid
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
-          PermissionSet is a named, reusable collection of permissions.
-          Platform archetypes (cluster-admin, tenant-admin, pack-executor, viewer) are
-          created at initialization time. guardian-schema.md §7.
+          IdentityProvider declares an external identity source whose assertions Guardian
+          will recognize and validate. One IdentityProvider per external identity source.
+          Multiple IdentityBindings may reference the same IdentityProvider.
+          guardian-schema.md §7.
         properties:
           apiVersion:
             description: |-
@@ -42,76 +53,64 @@ spec:
           metadata:
             type: object
           spec:
-            description: PermissionSetSpec defines the desired state of a PermissionSet.
+            description: IdentityProviderSpec defines the desired state of an IdentityProvider.
             properties:
-              description:
-                description: Description is a human-readable explanation of the permission
-                  set's intent.
-                type: string
-              permissions:
+              allowedAudiences:
                 description: |-
-                  Permissions is the list of permission rules in this set.
-                  Must not be empty.
+                  AllowedAudiences is the list of audiences accepted in identity assertions from
+                  this provider. Empty means any audience is accepted.
                 items:
-                  description: |-
-                    PermissionRule defines a single permission rule within a PermissionSet.
-                    Follows the Kubernetes RBAC rule model.
-                  properties:
-                    apiGroups:
-                      description: |-
-                        APIGroups is the list of API groups this rule applies to.
-                        Empty string means the core API group.
-                      items:
-                        type: string
-                      type: array
-                    resourceNames:
-                      description: |-
-                        ResourceNames is an optional list of names of the resources this rule applies to.
-                        Empty means all resource names are allowed.
-                      items:
-                        type: string
-                      type: array
-                    resources:
-                      description: |-
-                        Resources is the list of resource types this rule applies to.
-                        Must not be empty.
-                      items:
-                        type: string
-                      type: array
-                    verbs:
-                      description: |-
-                        Verbs is the list of operations permitted on the resources.
-                        Each value must be one of the eight standard Kubernetes RBAC verbs.
-                      items:
-                        description: |-
-                          Verb is a typed Kubernetes RBAC verb.
-                          Valid values are the eight standard verbs: get, list, watch, create, update,
-                          patch, delete, deletecollection. guardian-schema.md §7.
-                        enum:
-                        - get
-                        - list
-                        - watch
-                        - create
-                        - update
-                        - patch
-                        - delete
-                        - deletecollection
-                        type: string
-                      type: array
-                  required:
-                  - resources
-                  - verbs
-                  type: object
+                  type: string
+                type: array
+              caBundle:
+                description: |-
+                  CABundle is the PEM-encoded CA certificate bundle for PKI trust.
+                  Required when Type=pki.
+                type: string
+              issuerURL:
+                description: |-
+                  IssuerURL is the OIDC provider URL. Required when Type=oidc.
+                  The reconciler fetches {IssuerURL}/.well-known/openid-configuration to verify
+                  reachability and set the Reachable condition.
+                type: string
+              tokenSigningKey:
+                description: |-
+                  TokenSigningKey is the PEM-encoded public key used to verify token signatures.
+                  Required when Type=token.
+                type: string
+              type:
+                allOf:
+                - enum:
+                  - oidc
+                  - pki
+                  - token
+                - enum:
+                  - oidc
+                  - pki
+                  - token
+                description: |-
+                  Type is the identity provider class. Determines which configuration fields
+                  are required: oidc requires IssuerURL, pki requires CABundle, token requires
+                  TokenSigningKey. guardian-schema.md §7.
+                type: string
+              validationRules:
+                description: |-
+                  ValidationRules is an ordered list of CEL expressions evaluated against
+                  identity assertions from this provider. All rules must pass for an assertion
+                  to be accepted. Empty means no additional rules beyond type-level validation.
+                items:
+                  type: string
                 type: array
             required:
-            - permissions
+            - type
             type: object
           status:
-            description: PermissionSetStatus defines the observed state of a PermissionSet.
+            description: IdentityProviderStatus defines the observed state of an IdentityProvider.
             properties:
               conditions:
-                description: Conditions is the list of status conditions for this
-                  PermissionSet.
+                description: |-
+                  Conditions is the list of status conditions for this IdentityProvider.
+                  Condition types: Valid, Reachable (OIDC only).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -171,15 +170,9 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               observedGeneration:
-                description: ObservedGeneration is the generation of the PermissionSet
+                description: ObservedGeneration is the generation of the IdentityProvider
                   spec last reconciled.
                 format: int64
-                type: integer
-              profileReferenceCount:
-                description: |-
-                  ProfileReferenceCount is the number of RBACProfiles currently referencing
-                  this PermissionSet. Informational only.
-                format: int32
                 type: integer
             type: object
         type: object
