@@ -1,6 +1,6 @@
 // Package controller contains the reconcilers for the security.ontai.dev API group.
 //
-// INV-002: ont-security is the one operator with genuine in-process intelligence.
+// INV-002: guardian is the one operator with genuine in-process intelligence.
 // ValidateRBACPolicySpec performs policy validation entirely in-process, with no
 // Kubernetes API calls and no Job submission. This function must never be called
 // after a Job has been submitted — that would be an INV-002 violation. The validation
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // ValidationCheckName is a typed string identifying a specific validation check.
@@ -63,7 +63,7 @@ type PolicyValidationResult struct {
 // dependencies. It is independently testable without envtest.
 //
 // INV-002 boundary: this function and RBACPolicyReconciler are the entirety of
-// ont-security's in-process validation. No Job is submitted as a result of
+// guardian's in-process validation. No Job is submitted as a result of
 // validation. Any future refactor that calls this function after a Job submission
 // is an INV-002 violation.
 func ValidateRBACPolicySpec(spec securityv1alpha1.RBACPolicySpec) PolicyValidationResult {

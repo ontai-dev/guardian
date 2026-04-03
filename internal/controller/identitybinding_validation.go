@@ -3,7 +3,7 @@ package controller
 import (
 	"fmt"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // IdentityBindingValidationResult is the output of ValidateIdentityBindingSpec.
@@ -18,7 +18,7 @@ type IdentityBindingValidationResult struct {
 }
 
 // tokenMaxTTL is the hard security constraint on token max TTL.
-// This value is not configurable. ont-security-schema.md §7.
+// This value is not configurable. guardian-schema.md §7.
 const tokenMaxTTL = 900
 
 // ValidateIdentityBindingSpec validates the structural integrity of an IdentityBindingSpec.
@@ -72,13 +72,13 @@ func ValidateIdentityBindingSpec(spec securityv1alpha1.IdentityBindingSpec) Iden
 	}
 
 	// Check 4 — Token TTL hard constraint.
-	// ont-security-schema.md §7: 15-minute maximum. Non-configurable. Non-overridable.
+	// guardian-schema.md §7: 15-minute maximum. Non-configurable. Non-overridable.
 	if validTrustMethod && spec.TrustMethod == securityv1alpha1.TrustMethodToken {
 		if spec.TokenMaxTTLSeconds <= 0 {
 			fail("tokenMaxTTLSeconds must be greater than 0 when trustMethod=token")
 		} else if spec.TokenMaxTTLSeconds > tokenMaxTTL {
 			fail(fmt.Sprintf("%s: tokenMaxTTLSeconds %d exceeds the hard limit of %d seconds (15 minutes); "+
-				"this is a non-configurable security constraint per ont-security-schema.md §7",
+				"this is a non-configurable security constraint per guardian-schema.md §7",
 				securityv1alpha1.ReasonTokenTTLExceeded, spec.TokenMaxTTLSeconds, tokenMaxTTL))
 		}
 	}

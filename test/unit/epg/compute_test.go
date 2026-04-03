@@ -11,8 +11,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/epg"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/epg"
 )
 
 // helpers — shared builder functions

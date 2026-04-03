@@ -1,8 +1,8 @@
-module github.com/ontai-dev/ont-security
+module github.com/ontai-dev/guardian
 
 go 1.25.0
 
-replace github.com/ontai-dev/ont-runner => ../ont-runner
+replace github.com/ontai-dev/conductor => ../conductor
 
 require (
 	k8s.io/api v0.35.3

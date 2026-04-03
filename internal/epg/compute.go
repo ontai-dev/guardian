@@ -6,14 +6,14 @@ import (
 	"strings"
 	"time"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // ComputeEPG computes the Effective Permission Graph from the provided inputs.
 //
 // All inputs are already-fetched Go types. No Kubernetes API calls are made
 // inside this function. The computation is idempotent: given the same inputs,
-// it always produces the same output. ont-security-design.md §2.
+// it always produces the same output. guardian-design.md §2.
 //
 // Parameters:
 //   - provisioned: RBACProfiles with Status.Provisioned=true. Caller guarantees this.

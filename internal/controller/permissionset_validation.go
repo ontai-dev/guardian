@@ -3,11 +3,11 @@ package controller
 import (
 	"fmt"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // validVerbs is the set of permitted verb values in a PermissionRule.
-// ont-security-schema.md §7.
+// guardian-schema.md §7.
 var validVerbs = map[string]struct{}{
 	"get":              {},
 	"list":             {},

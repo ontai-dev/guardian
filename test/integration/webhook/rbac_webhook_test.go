@@ -1,4 +1,4 @@
-// Package webhook_test contains integration tests for the ont-security RBAC admission webhook.
+// Package webhook_test contains integration tests for the guardian RBAC admission webhook.
 //
 // These tests use envtest to start a real API server, wire the admission webhook,
 // and verify enforcement behavior by attempting to create RBAC resources directly
@@ -6,7 +6,7 @@
 //
 // The webhook enforces: all Role, ClusterRole, RoleBinding, ClusterRoleBinding,
 // and ServiceAccount resources on the management cluster must carry the annotation
-// ontai.dev/rbac-owner=ont-security. CS-INV-001.
+// ontai.dev/rbac-owner=guardian. CS-INV-001.
 //
 // kube-system is excluded from enforcement via NamespaceSelector.
 //
@@ -40,8 +40,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/webhook"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
 var (

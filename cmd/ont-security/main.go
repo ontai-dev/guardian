@@ -1,11 +1,11 @@
-// Binary ont-security is the controller-runtime manager entry point for the
-// ont-security operator.
+// Binary guardian is the controller-runtime manager entry point for the
+// guardian operator.
 //
 // It registers all reconcilers (RBACPolicyReconciler, RBACProfileReconciler,
 // IdentityBindingReconciler, EPGReconciler) and starts the manager with leader
 // election. The admission webhook server is registered here once implemented.
 //
-// Namespaces and lease names follow ont-security-design.md Section 1 and the
+// Namespaces and lease names follow guardian-design.md Section 1 and the
 // ONT Platform Constitution Section 6.
 package main
 
@@ -22,9 +22,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/controller"
-	"github.com/ontai-dev/ont-security/internal/webhook"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/controller"
+	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
 var scheme = runtime.NewScheme()
@@ -64,7 +64,7 @@ func main() {
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:  healthProbeAddr,
 		LeaderElection:          enableLeaderElection,
-		LeaderElectionID:        "ont-security-leader",
+		LeaderElectionID:        "guardian-leader",
 		LeaderElectionNamespace: "security-system",
 		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
 			Port: webhookPort,
@@ -129,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting ont-security manager")
+	setupLog.Info("starting guardian manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

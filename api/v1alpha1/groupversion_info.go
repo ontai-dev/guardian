@@ -1,6 +1,6 @@
 // Package v1alpha1 contains API types for the security.ontai.dev/v1alpha1 API group.
 //
-// This package is the Kubernetes API contract for ont-security. All CRD types are
+// This package is the Kubernetes API contract for guardian. All CRD types are
 // registered here. Breaking changes require a version bump to v1alpha2 or v1beta1
 // and coordination with all operators that reference these types.
 package v1alpha1

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // ComplianceCheckResult is the output of CheckProfilePolicyCompliance.

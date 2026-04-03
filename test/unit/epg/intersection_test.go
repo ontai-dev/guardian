@@ -7,8 +7,8 @@ package epg_test
 import (
 	"testing"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/epg"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/epg"
 )
 
 // helpers for intersection tests

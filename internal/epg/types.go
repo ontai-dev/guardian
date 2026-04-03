@@ -1,11 +1,11 @@
 // Package epg implements the Effective Permission Graph computation engine.
 //
 // This package contains pure computation logic and bridge types. It may import
-// ont-security/api/v1alpha1 for input/output types. It must not import
+// guardian/api/v1alpha1 for input/output types. It must not import
 // sigs.k8s.io/controller-runtime/pkg/client or k8s.io/client-go — all Kubernetes
 // API interactions belong in the reconciler layer.
 //
-// ont-security-design.md §2 — EPG Computation Model.
+// guardian-design.md §2 — EPG Computation Model.
 package epg
 
 import "time"

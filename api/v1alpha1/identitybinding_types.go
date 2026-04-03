@@ -27,7 +27,7 @@ const (
 	TrustMethodMTLS TrustMethod = "mtls"
 
 	// TrustMethodToken is token-based trust. Requires explicit justification and
-	// has a hard maximum TTL of 900 seconds (15 minutes). ont-security-schema.md §7.
+	// has a hard maximum TTL of 900 seconds (15 minutes). guardian-schema.md §7.
 	TrustMethodToken TrustMethod = "token"
 )
 
@@ -46,7 +46,7 @@ const (
 	ReasonIdentityBindingInvalid = "Invalid"
 
 	// ReasonTokenTTLExceeded is set when TrustMethod=token and TokenMaxTTLSeconds > 900.
-	// This is a hard security constraint. ont-security-schema.md §7.
+	// This is a hard security constraint. guardian-schema.md §7.
 	ReasonTokenTTLExceeded = "TokenTTLExceeded"
 
 	// ReasonTrustMethodMismatch is set when the trust method is incompatible with
@@ -118,7 +118,7 @@ type IdentityBindingSpec struct {
 
 	// TokenMaxTTLSeconds is the maximum token lifetime in seconds.
 	// Required when TrustMethod=token. Hard limit: 900 seconds (15 minutes).
-	// ont-security-schema.md §7. This is a non-configurable security constraint.
+	// guardian-schema.md §7. This is a non-configurable security constraint.
 	// +optional
 	TokenMaxTTLSeconds int32 `json:"tokenMaxTTLSeconds,omitempty"`
 }
@@ -141,7 +141,7 @@ type IdentityBindingStatus struct {
 }
 
 // IdentityBinding maps an external identity to an ONT permission principal.
-// ont-security-schema.md §7.
+// guardian-schema.md §7.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

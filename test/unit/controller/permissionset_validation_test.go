@@ -3,8 +3,8 @@ package controller_test
 import (
 	"testing"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/controller"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/controller"
 )
 
 // validPermissionSetSpec returns a PermissionSetSpec that passes all checks.

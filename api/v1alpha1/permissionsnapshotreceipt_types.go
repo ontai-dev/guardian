@@ -18,13 +18,13 @@ const (
 
 	// SyncStatusDegraded indicates persistent failure beyond the extended threshold.
 	// No new authorization decisions are permitted. Human intervention required.
-	// ont-security-schema.md §9.
+	// guardian-schema.md §9.
 	SyncStatusDegraded SyncStatus = "DegradedSecurityState"
 )
 
 // PermissionSnapshotReceiptSpec defines the desired state of a PermissionSnapshotReceipt.
 // Created and maintained exclusively by the runner in agent mode.
-// Never authored manually. ont-security-schema.md §8.
+// Never authored manually. guardian-schema.md §8.
 type PermissionSnapshotReceiptSpec struct {
 	// ClusterName is the name of the target cluster this receipt belongs to.
 	ClusterName string `json:"clusterName"`
@@ -54,7 +54,7 @@ type PermissionSnapshotReceiptStatus struct {
 // PermissionSnapshotReceipt is the target cluster CRD managed by the runner in
 // agent mode. It records the current acknowledged PermissionSnapshot and local
 // RBAC provisioning status. One per target cluster.
-// Exists in ont-system on the target cluster. ont-security-schema.md §8.
+// Exists in ont-system on the target cluster. guardian-schema.md §8.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

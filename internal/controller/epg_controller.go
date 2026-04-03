@@ -22,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/epg"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/epg"
 )
 
 const (
@@ -31,7 +31,7 @@ const (
 	epgSnapshotNamespace = "security-system"
 
 	// epgFieldOwner is the server-side apply field manager name for EPGReconciler.
-	epgFieldOwner = "ont-security-epg"
+	epgFieldOwner = "guardian-epg"
 
 	// epgTriggerName is the fixed reconcile request name used for all EPG recompute triggers.
 	// All four annotation-based watch sources map to this key to collapse multiple
@@ -52,7 +52,7 @@ const (
 // using a fixed reconcile request key (security-system/epg-trigger). This collapses
 // multiple simultaneous triggers into one computation run.
 //
-// Implementation: ont-security-design.md §2.
+// Implementation: guardian-design.md §2.
 //
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacprofiles,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch;patch
@@ -293,7 +293,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 //   - true→false (delivered):  Normal  "SnapshotDelivered"
 //
 // This method never writes Status.LastAckedVersion — that field is owned
-// exclusively by the management cluster ont-agent receipt observation loop.
+// exclusively by the management cluster conductor receipt observation loop.
 func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 	logger := log.FromContext(ctx)
 

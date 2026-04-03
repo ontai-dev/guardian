@@ -125,7 +125,7 @@ type RBACProfileStatus struct {
 // RBACProfile is the per-component per-tenant permission declaration.
 // Validated against the governing RBACPolicy before provisioned=true is set.
 // No operator is enabled until its RBACProfile reaches provisioned=true. INV-003.
-// ont-security-schema.md §7.
+// guardian-schema.md §7.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

@@ -3,7 +3,7 @@ package epg
 import (
 	"sort"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 // IntersectWithCeiling computes the effective rules for a set of declared
@@ -12,7 +12,7 @@ import (
 // The ceiling is the MaximumPermissionSetRef's PermissionSet from the governing
 // RBACPolicy. Any declared permission that is not within the ceiling is trimmed.
 // Any declared verb not in the ceiling is trimmed. This is the policy enforcement
-// mechanism — ont-security-schema.md §7 and ont-security-design.md §2.
+// mechanism — guardian-schema.md §7 and guardian-design.md §2.
 //
 // Algorithm:
 //  1. For each (APIGroup, Resource) pair in the declared rules, find matching

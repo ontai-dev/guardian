@@ -34,7 +34,7 @@ type PrincipalPermissionEntry struct {
 
 // PermissionSnapshotSpec defines the desired state of a PermissionSnapshot.
 // This CR is never manually authored — it is generated exclusively by the
-// EPGReconciler. ont-security-schema.md §7.
+// EPGReconciler. guardian-schema.md §7.
 type PermissionSnapshotSpec struct {
 	// TargetCluster is the cluster name this snapshot governs.
 	TargetCluster string `json:"targetCluster"`
@@ -76,7 +76,7 @@ type PermissionSnapshotStatus struct {
 
 // PermissionSnapshot is a computed, versioned EPG for a specific target cluster.
 // Generated on any input change by the EPGReconciler. Never manually authored.
-// One per target cluster, replaced in-place on recomputation. ont-security-schema.md §7.
+// One per target cluster, replaced in-place on recomputation. guardian-schema.md §7.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

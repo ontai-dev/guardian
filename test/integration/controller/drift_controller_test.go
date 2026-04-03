@@ -22,7 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
 const (
@@ -114,7 +114,7 @@ func TestDrift_NewSnapshotWithExpectedVersion_BecomesTrue(t *testing.T) {
 // Test 2 — Writing a matching LastAckedVersion to a drifted PermissionSnapshot
 // clears Drift and emits a SnapshotDelivered event.
 //
-// The test simulates what the management cluster ont-agent receipt observation loop does:
+// The test simulates what the management cluster conductor receipt observation loop does:
 // it reads a PermissionSnapshotReceipt and updates PermissionSnapshot.Status.LastAckedVersion.
 // The EPGReconciler's drift-check path then detects the match and sets Drift=false.
 func TestDrift_MatchingLastAckedVersion_ClearsDrift(t *testing.T) {
@@ -133,7 +133,7 @@ func TestDrift_MatchingLastAckedVersion_ClearsDrift(t *testing.T) {
 	// Create a PermissionSnapshotReceipt to trigger the drift-check watch.
 	_ = createReceipt(t, "drift-test-receipt-2", "security-system", "ccs-test-d2", version)
 
-	// Simulate the management cluster ont-agent writing LastAckedVersion to the snapshot.
+	// Simulate the management cluster conductor writing LastAckedVersion to the snapshot.
 	// (In production, the agent reads the receipt and updates this field.)
 	latest := &securityv1alpha1.PermissionSnapshot{}
 	if err := k8sClient.Get(context.Background(),

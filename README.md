@@ -1,1 +1,1 @@
-ont-security — ONT Security Plane. See ont-security-design.md for architecture.
+guardian — ONT Security Plane. See guardian-design.md for architecture.

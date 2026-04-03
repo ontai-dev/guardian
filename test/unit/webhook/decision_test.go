@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ontai-dev/ont-security/internal/webhook"
+	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
 // Test 1 — Non-intercepted kind: always allowed regardless of annotations.
@@ -106,7 +106,7 @@ func TestEvaluateAdmission_Role_CorrectAnnotation_Allowed(t *testing.T) {
 }
 
 // Test 8 — Role with wrong annotation value: denied.
-// Any value other than "ont-security" is rejected.
+// Any value other than "guardian" is rejected.
 func TestEvaluateAdmission_Role_WrongAnnotationValue_Denied(t *testing.T) {
 	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
 		Kind:      "Role",

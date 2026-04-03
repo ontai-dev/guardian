@@ -57,7 +57,7 @@ type PermissionSetStatus struct {
 
 // PermissionSet is a named, reusable collection of permissions.
 // Platform archetypes (cluster-admin, tenant-admin, pack-executor, viewer) are
-// created at initialization time. ont-security-schema.md §7.
+// created at initialization time. guardian-schema.md §7.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

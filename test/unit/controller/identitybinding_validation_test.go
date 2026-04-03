@@ -3,8 +3,8 @@ package controller_test
 import (
 	"testing"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/controller"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/controller"
 )
 
 // validOIDCSpec returns a valid OIDC IdentityBindingSpec with mTLS trust.
@@ -35,10 +35,10 @@ func TestValidateIdentityBindingSpec_ValidOIDC(t *testing.T) {
 func TestValidateIdentityBindingSpec_ValidServiceAccount(t *testing.T) {
 	spec := securityv1alpha1.IdentityBindingSpec{
 		IdentityType:  securityv1alpha1.IdentityTypeServiceAccount,
-		PrincipalName: "ont-runner-sa",
+		PrincipalName: "conductor-sa",
 		TrustMethod:   securityv1alpha1.TrustMethodMTLS,
 		ServiceAccountConfig: &securityv1alpha1.ServiceAccountConfig{
-			Name:      "ont-runner",
+			Name:      "conductor",
 			Namespace: "ont-system",
 		},
 	}

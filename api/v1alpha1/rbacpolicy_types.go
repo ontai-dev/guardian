@@ -5,7 +5,7 @@ import (
 )
 
 // EnforcementMode controls how policy violations are handled by the admission webhook.
-// ont-security-schema.md §7 RBACPolicy.
+// guardian-schema.md §7 RBACPolicy.
 type EnforcementMode string
 
 const (
@@ -19,12 +19,12 @@ const (
 )
 
 // SubjectScope declares the class of principals this policy governs.
-// ont-security-schema.md §7 RBACPolicy.
+// guardian-schema.md §7 RBACPolicy.
 type SubjectScope string
 
 const (
 	// SubjectScopePlatform applies to platform operators and system components
-	// (e.g., ont-security, ont-platform, ont-infra, ont-runner).
+	// (e.g., guardian, platform, wrapper, conductor).
 	SubjectScopePlatform SubjectScope = "platform"
 
 	// SubjectScopeTenant applies to tenant principals and their associated
@@ -64,7 +64,7 @@ const (
 // RBACPolicySpec defines the desired state of a RBACPolicy.
 // RBACPolicy is the governing policy for RBACProfiles within its scope.
 // Profiles that declare permissions exceeding this policy are rejected at admission.
-// ont-security-schema.md §7.
+// guardian-schema.md §7.
 type RBACPolicySpec struct {
 	// SubjectScope declares the class of principals this policy governs.
 	// Must be one of: platform, tenant.
@@ -116,7 +116,7 @@ type RBACPolicyStatus struct {
 
 // RBACPolicy is the governing policy resource for the security.ontai.dev API group.
 // It constrains what RBACProfiles within its scope may declare. Profiles that
-// exceed their governing policy are rejected at admission. ont-security-schema.md §7.
+// exceed their governing policy are rejected at admission. guardian-schema.md §7.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

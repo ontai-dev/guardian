@@ -3,8 +3,8 @@ package controller_test
 import (
 	"testing"
 
-	securityv1alpha1 "github.com/ontai-dev/ont-security/api/v1alpha1"
-	"github.com/ontai-dev/ont-security/internal/controller"
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/controller"
 )
 
 // strictPolicy returns a base RBACPolicySpec with strict enforcement.
@@ -109,7 +109,7 @@ func TestComplianceCheck_ClusterNotInAllowedList_Audit(t *testing.T) {
 func TestComplianceCheck_PlatformPrincipal_TenantPolicy(t *testing.T) {
 	policy := strictPolicy([]string{"ccs-test"})
 	policy.SubjectScope = securityv1alpha1.SubjectScopeTenant
-	profile := tenantProfile("system:serviceaccount:security-system:ont-security", []string{"ccs-test"})
+	profile := tenantProfile("system:serviceaccount:security-system:guardian", []string{"ccs-test"})
 
 	result := controller.CheckProfilePolicyCompliance(profile, policy)
 
@@ -157,7 +157,7 @@ func TestComplianceCheck_CorrectSubjectScope(t *testing.T) {
 func TestComplianceCheck_PlatformPrincipal_PlatformPolicy(t *testing.T) {
 	policy := strictPolicy([]string{})
 	policy.SubjectScope = securityv1alpha1.SubjectScopePlatform
-	profile := tenantProfile("system:serviceaccount:ont-system:ont-runner", []string{})
+	profile := tenantProfile("system:serviceaccount:ont-system:conductor", []string{})
 
 	result := controller.CheckProfilePolicyCompliance(profile, policy)
 
