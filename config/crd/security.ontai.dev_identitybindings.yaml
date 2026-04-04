@@ -58,6 +58,15 @@ spec:
                 required:
                 - commonName
                 type: object
+              identityProviderRef:
+                description: |-
+                  IdentityProviderRef is the name of the IdentityProvider in the same namespace
+                  that serves as the upstream trust anchor for this binding. When set, the
+                  reconciler resolves the provider, verifies the type matches this binding's
+                  identityType, and verifies the provider has Valid=True condition.
+                  Required for oidc and certificate identity types. Optional for serviceAccount.
+                  guardian-schema.md §7 — IdentityProvider relationship.
+                type: string
               identityType:
                 description: |-
                   IdentityType declares the class of external identity being bound.

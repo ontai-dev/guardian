@@ -22,6 +22,22 @@ const (
 	VerbDeleteCollection Verb = "deletecollection"
 )
 
+// Condition type constants for PermissionSet.
+const (
+	// ConditionTypePermissionSetValid indicates whether the PermissionSet spec
+	// is structurally valid (all rules have non-empty Resources and valid Verbs).
+	ConditionTypePermissionSetValid = "PermissionSetValid"
+)
+
+// Condition reason constants for PermissionSet.
+const (
+	// ReasonPermissionSetValid is set when ValidatePermissionSetSpec returns Valid=true.
+	ReasonPermissionSetValid = "Valid"
+
+	// ReasonPermissionSetInvalid is set when ValidatePermissionSetSpec returns Valid=false.
+	ReasonPermissionSetInvalid = "Invalid"
+)
+
 // PermissionRule defines a single permission rule within a PermissionSet.
 // Follows the Kubernetes RBAC rule model.
 type PermissionRule struct {

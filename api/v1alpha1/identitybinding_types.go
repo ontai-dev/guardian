@@ -33,13 +33,19 @@ const (
 
 // Condition type constants for IdentityBinding.
 const (
-	// ConditionTypeIdentityBindingValid indicates whether the binding is valid.
+	// ConditionTypeIdentityBindingValid indicates whether the binding is structurally
+	// valid, trust method constraints pass, and the trust anchor is resolved (when set).
 	ConditionTypeIdentityBindingValid = "IdentityBindingValid"
+
+	// ConditionTypeIdentityBindingTrustAnchorResolved indicates whether the
+	// referenced IdentityProvider was found, type-matched, and validated.
+	// Only set when IdentityProviderRef is non-empty.
+	ConditionTypeIdentityBindingTrustAnchorResolved = "TrustAnchorResolved"
 )
 
 // Condition reason constants for IdentityBinding.
 const (
-	// ReasonIdentityBindingValid is set when ValidateIdentityBindingSpec returns Valid=true.
+	// ReasonIdentityBindingValid is set when all validation and trust checks pass.
 	ReasonIdentityBindingValid = "Valid"
 
 	// ReasonIdentityBindingInvalid is set when ValidateIdentityBindingSpec returns Valid=false.
@@ -52,6 +58,22 @@ const (
 	// ReasonTrustMethodMismatch is set when the trust method is incompatible with
 	// the identity type (e.g., token trust with certificate identity).
 	ReasonTrustMethodMismatch = "TrustMethodMismatch"
+
+	// ReasonTrustAnchorResolved is set when the referenced IdentityProvider is found,
+	// type-matched, and has Valid=True condition.
+	ReasonTrustAnchorResolved = "TrustAnchorResolved"
+
+	// ReasonTrustAnchorNotFound is set when the referenced IdentityProvider does not
+	// exist in the same namespace.
+	ReasonTrustAnchorNotFound = "TrustAnchorNotFound"
+
+	// ReasonTrustAnchorInvalid is set when the referenced IdentityProvider exists but
+	// does not have Valid=True condition.
+	ReasonTrustAnchorInvalid = "TrustAnchorInvalid"
+
+	// ReasonTrustAnchorTypeMismatch is set when the referenced IdentityProvider's type
+	// does not match the expected provider type for this binding's identityType.
+	ReasonTrustAnchorTypeMismatch = "TrustAnchorTypeMismatch"
 )
 
 // OIDCConfig holds the configuration for an OIDC identity.
@@ -121,6 +143,15 @@ type IdentityBindingSpec struct {
 	// guardian-schema.md §7. This is a non-configurable security constraint.
 	// +optional
 	TokenMaxTTLSeconds int32 `json:"tokenMaxTTLSeconds,omitempty"`
+
+	// IdentityProviderRef is the name of the IdentityProvider in the same namespace
+	// that serves as the upstream trust anchor for this binding. When set, the
+	// reconciler resolves the provider, verifies the type matches this binding's
+	// identityType, and verifies the provider has Valid=True condition.
+	// Required for oidc and certificate identity types. Optional for serviceAccount.
+	// guardian-schema.md §7 — IdentityProvider relationship.
+	// +optional
+	IdentityProviderRef string `json:"identityProviderRef,omitempty"`
 }
 
 // IdentityBindingStatus defines the observed state of an IdentityBinding.
