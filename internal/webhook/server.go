@@ -46,3 +46,18 @@ func (s *AdmissionWebhookServer) Register(window *BootstrapWindow) error {
 	window.Close()
 	return nil
 }
+
+// RegisterLineage wires the LineageImmutabilityHandler into the manager's webhook
+// server at LineageWebhookPath ("/validate-lineage").
+//
+// The handler enforces spec.lineage immutability on guardian root-declaration CRDs
+// (RBACPolicy, RBACProfile, IdentityBinding, IdentityProvider, PermissionSet).
+// Any UPDATE request that modifies spec.lineage is rejected at admission.
+// CLAUDE.md §14 Decision 1, seam-core-schema.md §5.
+//
+// RegisterLineage must be called after the manager is created and before mgr.Start,
+// alongside Register. CS-INV-006.
+func (s *AdmissionWebhookServer) RegisterLineage() {
+	handler := &LineageImmutabilityHandler{}
+	s.mgr.GetWebhookServer().Register(LineageWebhookPath, &admission.Webhook{Handler: handler})
+}

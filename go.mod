@@ -1,6 +1,6 @@
 module github.com/ontai-dev/guardian
 
-go 1.25.0
+go 1.25.3
 
 replace github.com/ontai-dev/conductor => ../conductor
 

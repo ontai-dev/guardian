@@ -159,6 +159,10 @@ func main() {
 		setupLog.Error(err, "unable to register admission webhook")
 		os.Exit(1)
 	}
+	// Register the spec.lineage immutability gate for guardian root-declaration CRDs.
+	// Rejects any UPDATE that modifies spec.lineage on RBACPolicy, RBACProfile,
+	// IdentityBinding, IdentityProvider, or PermissionSet. CLAUDE.md §14 Decision 1.
+	webhookServer.RegisterLineage()
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
