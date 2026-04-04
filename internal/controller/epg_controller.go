@@ -72,6 +72,11 @@ type EPGReconciler struct {
 
 	// Recorder is the Kubernetes event recorder for emitting events.
 	Recorder record.EventRecorder
+
+	// Store is the optional EPG store for the PermissionService. When non-nil,
+	// it is updated after each successful EPG computation so that
+	// PermissionService queries reflect the latest EPG. Nil is safe (no-op).
+	Store EPGStoreWriter
 }
 
 // Reconcile is the main reconciliation loop for the EPGReconciler.
@@ -199,6 +204,13 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			fmt.Sprintf("EPGReconciler: computation failed: %v", err),
 		)
 		return ctrl.Result{RequeueAfter: 15e9}, nil
+	}
+
+	// Step H-post — Update the in-memory EPG store for PermissionService queries.
+	// This makes the latest computation immediately available to CheckPermission,
+	// ListPermissions, WhoCanDo, and ExplainDecision without a Kubernetes round-trip.
+	if r.Store != nil {
+		r.Store.Update(result)
 	}
 
 	// Step I — Upsert PermissionSnapshot for each cluster.

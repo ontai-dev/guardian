@@ -24,6 +24,7 @@ import (
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/controller"
+	"github.com/ontai-dev/guardian/internal/permissionservice"
 	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
@@ -40,6 +41,7 @@ func main() {
 		healthProbeAddr      string
 		enableLeaderElection bool
 		webhookPort          int
+		grpcAddr             string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
@@ -51,6 +53,8 @@ func main() {
 			"Ensures only one instance is active at a time.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443,
 		"The port the admission webhook server binds to.")
+	flag.StringVar(&grpcAddr, "grpc-address", ":9090",
+		"The address the PermissionService gRPC endpoint binds to.")
 
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -74,6 +78,9 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+
+	// Create the in-memory EPG store shared between EPGReconciler and PermissionService.
+	epgStore := permissionservice.NewInMemoryEPGStore()
 
 	if err := (&controller.RBACPolicyReconciler{
 		Client:   mgr.GetClient(),
@@ -124,10 +131,22 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("epg-controller"),
+		Store:    epgStore,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EPG")
 		os.Exit(1)
 	}
+
+	// Start the PermissionService gRPC server in the background.
+	// It serves the four operations (CheckPermission, ListPermissions, WhoCanDo,
+	// ExplainDecision) from the in-memory EPG updated by EPGReconciler.
+	// guardian-schema.md §10.
+	svc := permissionservice.NewService(epgStore)
+	go func() {
+		if err := permissionservice.ListenAndServe(grpcAddr, svc); err != nil {
+			setupLog.Error(err, "PermissionService gRPC server failed")
+		}
+	}()
 
 	// CS-INV-001: admission webhook is the enforcement mechanism; it must be registered
 	// before the manager starts. CS-INV-006: leader election is enforced by the manager —
