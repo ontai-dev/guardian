@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ontai-dev/seam-core/pkg/lineage"
 )
 
 // PermissionScope is a typed string declaring whether permissions are namespaced
@@ -88,6 +90,13 @@ type RBACProfileSpec struct {
 	// RBACPolicyRef is the name of the governing RBACPolicy in the same namespace.
 	// Must not be empty.
 	RBACPolicyRef string `json:"rbacPolicyRef"`
+
+	// Lineage is the sealed causal chain record for this root declaration.
+	// Authored once at object creation time and immutable thereafter.
+	// The admission webhook rejects any update that modifies this field after creation.
+	// seam-core-schema.md §5, CLAUDE.md §14 Decision 1.
+	// +optional
+	Lineage *lineage.SealedCausalChain `json:"lineage,omitempty"`
 }
 
 // RBACProfileStatus defines the observed state of a RBACProfile.

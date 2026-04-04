@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ontai-dev/seam-core/pkg/lineage"
 )
 
 // Verb is a typed Kubernetes RBAC verb.
@@ -69,6 +71,13 @@ type PermissionSetSpec struct {
 	// Permissions is the list of permission rules in this set.
 	// Must not be empty.
 	Permissions []PermissionRule `json:"permissions"`
+
+	// Lineage is the sealed causal chain record for this root declaration.
+	// Authored once at object creation time and immutable thereafter.
+	// The admission webhook rejects any update that modifies this field after creation.
+	// seam-core-schema.md §5, CLAUDE.md §14 Decision 1.
+	// +optional
+	Lineage *lineage.SealedCausalChain `json:"lineage,omitempty"`
 }
 
 // PermissionSetStatus defines the observed state of a PermissionSet.

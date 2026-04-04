@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ontai-dev/seam-core/pkg/lineage"
 )
 
 // IdentityProviderType is the class of external identity source.
@@ -78,6 +80,13 @@ type IdentityProviderSpec struct {
 	// to be accepted. Empty means no additional rules beyond type-level validation.
 	// +optional
 	ValidationRules []string `json:"validationRules,omitempty"`
+
+	// Lineage is the sealed causal chain record for this root declaration.
+	// Authored once at object creation time and immutable thereafter.
+	// The admission webhook rejects any update that modifies this field after creation.
+	// seam-core-schema.md §5, CLAUDE.md §14 Decision 1.
+	// +optional
+	Lineage *lineage.SealedCausalChain `json:"lineage,omitempty"`
 }
 
 // IdentityProviderStatus defines the observed state of an IdentityProvider.

@@ -55,6 +55,80 @@ spec:
           spec:
             description: RBACProfileSpec defines the desired state of a RBACProfile.
             properties:
+              lineage:
+                description: |-
+                  Lineage is the sealed causal chain record for this root declaration.
+                  Authored once at object creation time and immutable thereafter.
+                  The admission webhook rejects any update that modifies this field after creation.
+                  seam-core-schema.md §5, CLAUDE.md §14 Decision 1.
+                properties:
+                  creatingOperator:
+                    description: |-
+                      CreatingOperator identifies the Seam Operator that created this object.
+                      This is a structured identity carrying the operator name and its deployed
+                      version at creation time.
+                    properties:
+                      name:
+                        description: |-
+                          Name is the canonical name of the Seam Operator (e.g., platform, guardian,
+                          wrapper, conductor).
+                        type: string
+                      version:
+                        description: |-
+                          Version is the deployed version of the operator at the time the object was
+                          created (e.g., v1.26.5-r3). This allows audit tooling to correlate objects
+                          with the operator version that produced them.
+                        type: string
+                    required:
+                    - name
+                    - version
+                    type: object
+                  creationRationale:
+                    description: |-
+                      CreationRationale is the reason this object was created, drawn from the
+                      Seam Core controlled vocabulary defined in rationale.go. It is not a
+                      free-text field.
+                    enum:
+                    - ClusterProvision
+                    - ClusterDecommission
+                    - SecurityEnforcement
+                    - PackExecution
+                    - VirtualizationFulfillment
+                    - ConductorAssignment
+                    - VortexBinding
+                    type: string
+                  rootGenerationAtCreation:
+                    description: |-
+                      RootGenerationAtCreation is the metadata.generation of the root declaration
+                      at the time this object was created. Together with RootUID, it provides a
+                      complete temporal anchor for the derivation record.
+                    format: int64
+                    type: integer
+                  rootKind:
+                    description: |-
+                      RootKind is the kind of the root declaration that caused this object to
+                      exist (e.g., TalosCluster, PackExecution, RBACPolicy).
+                    type: string
+                  rootName:
+                    description: RootName is the name of the root declaration.
+                    type: string
+                  rootNamespace:
+                    description: RootNamespace is the namespace of the root declaration.
+                    type: string
+                  rootUID:
+                    description: |-
+                      RootUID is the UID of the root declaration at the time this object was
+                      created. Used to verify that no root declaration replacement has occurred.
+                    type: string
+                required:
+                - creatingOperator
+                - creationRationale
+                - rootGenerationAtCreation
+                - rootKind
+                - rootName
+                - rootNamespace
+                - rootUID
+                type: object
               permissionDeclarations:
                 description: |-
                   PermissionDeclarations is the list of permission declarations for this profile.

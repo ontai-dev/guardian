@@ -80,6 +80,21 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Step C — Advance ObservedGeneration to the current spec generation.
 	policy.Status.ObservedGeneration = policy.Generation
 
+	// Step C2 — Initialize LineageSynced on first observation.
+	// One-time write only. The reconciler never updates this condition again.
+	// InfrastructureLineageController takes ownership when deployed.
+	// seam-core-schema.md §7 Declaration 5.
+	if securityv1alpha1.FindCondition(policy.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced) == nil {
+		securityv1alpha1.SetCondition(
+			&policy.Status.Conditions,
+			securityv1alpha1.ConditionTypeLineageSynced,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonLineageControllerAbsent,
+			"InfrastructureLineageController is not yet deployed.",
+			policy.Generation,
+		)
+	}
+
 	// Step D — Validate the spec. Pure in-process — no API calls, no Jobs.
 	validationResult := ValidateRBACPolicySpec(policy.Spec)
 

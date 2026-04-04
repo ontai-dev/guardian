@@ -80,6 +80,21 @@ func (r *PermissionSetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Step 3 — Advance ObservedGeneration.
 	ps.Status.ObservedGeneration = ps.Generation
 
+	// Step 3a — Initialize LineageSynced on first observation.
+	// One-time write only. The reconciler never updates this condition again.
+	// InfrastructureLineageController takes ownership when deployed.
+	// seam-core-schema.md §7 Declaration 5.
+	if securityv1alpha1.FindCondition(ps.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced) == nil {
+		securityv1alpha1.SetCondition(
+			&ps.Status.Conditions,
+			securityv1alpha1.ConditionTypeLineageSynced,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonLineageControllerAbsent,
+			"InfrastructureLineageController is not yet deployed.",
+			ps.Generation,
+		)
+	}
+
 	// Step 4 — Structural validation.
 	result := ValidatePermissionSetSpec(ps.Spec)
 	if !result.Valid {

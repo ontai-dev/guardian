@@ -4,7 +4,11 @@ go 1.25.0
 
 replace github.com/ontai-dev/conductor => ../conductor
 
+replace github.com/ontai-dev/seam-core => ../seam-core
+
 require (
+	github.com/ontai-dev/seam-core v0.0.0-00010101000000-000000000000
+	google.golang.org/grpc v1.72.2
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
@@ -54,7 +58,6 @@ require (
 	golang.org/x/time v0.9.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250528174236-200df99c418a // indirect
-	google.golang.org/grpc v1.72.2 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

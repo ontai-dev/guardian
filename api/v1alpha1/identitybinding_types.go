@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ontai-dev/seam-core/pkg/lineage"
 )
 
 // IdentityType is a typed string declaring the class of external identity.
@@ -152,6 +154,13 @@ type IdentityBindingSpec struct {
 	// guardian-schema.md §7 — IdentityProvider relationship.
 	// +optional
 	IdentityProviderRef string `json:"identityProviderRef,omitempty"`
+
+	// Lineage is the sealed causal chain record for this root declaration.
+	// Authored once at object creation time and immutable thereafter.
+	// The admission webhook rejects any update that modifies this field after creation.
+	// seam-core-schema.md §5, CLAUDE.md §14 Decision 1.
+	// +optional
+	Lineage *lineage.SealedCausalChain `json:"lineage,omitempty"`
 }
 
 // IdentityBindingStatus defines the observed state of an IdentityBinding.

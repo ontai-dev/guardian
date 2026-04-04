@@ -91,6 +91,21 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Step C — Advance ObservedGeneration to the current spec generation.
 	profile.Status.ObservedGeneration = profile.Generation
 
+	// Step C2 — Initialize LineageSynced on first observation.
+	// One-time write only. The reconciler never updates this condition again.
+	// InfrastructureLineageController takes ownership when deployed.
+	// seam-core-schema.md §7 Declaration 5.
+	if securityv1alpha1.FindCondition(profile.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced) == nil {
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeLineageSynced,
+			metav1.ConditionFalse,
+			securityv1alpha1.ReasonLineageControllerAbsent,
+			"InfrastructureLineageController is not yet deployed.",
+			profile.Generation,
+		)
+	}
+
 	// Step D — Validate the spec. Pure in-process — no API calls, no Jobs.
 	validationResult := ValidateRBACProfileSpec(profile.Spec)
 	if !validationResult.Valid {
