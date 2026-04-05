@@ -9,6 +9,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // AuditSinkLabelKey is the label selector used to identify ConfigMaps that
@@ -26,7 +28,7 @@ const AuditSinkLabelValue = "true"
 //
 // Role: management only. guardian-schema.md §15.
 //
-// For now, the reconciler processes ConfigMaps in seam-system labelled with
+// The reconciler processes ConfigMaps in seam-system labelled with
 // seam.ontai.dev/audit-batch=true. The real federation channel delivery is wired
 // in the Conductor federation session (conductor-schema.md §18).
 //
@@ -41,33 +43,11 @@ type AuditSinkReconciler struct {
 	// Recorder is the Kubernetes event recorder.
 	Recorder record.EventRecorder
 
-	// DB is the database interface used for deduplication and event insertion.
-	// Injected at construction time; must be non-nil when role=management.
-	DB AuditDatabase
-}
-
-// AuditDatabase is the interface through which AuditSinkReconciler accesses
-// the CNPG-backed audit_events table. It is defined here to allow the full
-// database implementation (internal/database) to satisfy it and to allow mock
-// implementations in tests.
-type AuditDatabase interface {
-	// EventExists reports whether an audit event with the given clusterID and
-	// sequenceNumber already exists in the audit_events table.
-	EventExists(ctx context.Context, clusterID string, sequenceNumber int64) (bool, error)
-
-	// InsertEvent inserts a single audit event into the audit_events table.
-	InsertEvent(ctx context.Context, event AuditEvent) error
-}
-
-// AuditEvent is a single audit event record written to the audit_events table.
-type AuditEvent struct {
-	ClusterID      string
-	SequenceNumber int64
-	Subject        string
-	Action         string
-	Resource       string
-	Decision       string
-	MatchedPolicy  string
+	// DB is the database.AuditDatabase interface used for deduplication and event
+	// insertion. Injected at construction time; must be non-nil when role=management.
+	// The interface is defined in internal/database so that mock implementations
+	// can be injected in tests without importing a real CNPG driver.
+	DB database.AuditDatabase
 }
 
 // Reconcile processes an audit batch ConfigMap.

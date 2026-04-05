@@ -30,6 +30,7 @@ import (
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/controller"
+	"github.com/ontai-dev/guardian/internal/database"
 	"github.com/ontai-dev/guardian/internal/permissionservice"
 	"github.com/ontai-dev/guardian/internal/role"
 	"github.com/ontai-dev/guardian/internal/webhook"
@@ -95,6 +96,26 @@ func main() {
 	// Create the in-memory EPG store shared between EPGReconciler and PermissionService.
 	epgStore := permissionservice.NewInMemoryEPGStore()
 
+	// For role=management: run the CNPG migration runner before controller registration.
+	// If CNPG is unreachable, this blocks in a degraded hold loop (30s retry) until
+	// CNPG becomes reachable. guardian-schema.md §3 Step 1, §16.
+	var auditDB database.DB
+	if guardianRole == role.RoleManagement {
+		cfg, err := database.ConnConfigFromSecret(ctrl.SetupSignalHandler(), mgr.GetClient())
+		if err != nil {
+			// CNPG_SECRET_NAME / CNPG_SECRET_NAMESPACE not set is a hard failure.
+			setupLog.Error(err, "cannot resolve CNPG connection config")
+			os.Exit(1)
+		}
+		db, err := database.RunWithRetry(ctrl.SetupSignalHandler(), cfg, mgr.GetClient())
+		if err != nil {
+			// ctx cancelled — clean shutdown.
+			setupLog.Error(err, "CNPG startup aborted")
+			os.Exit(1)
+		}
+		auditDB = db
+	}
+
 	// Register controllers shared by both roles.
 	if err := setupSharedControllers(mgr); err != nil {
 		setupLog.Error(err, "unable to set up shared controllers")
@@ -102,7 +123,7 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, auditDB); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -209,10 +230,10 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.DB) error {
 	switch r {
 	case role.RoleManagement:
-		return setupManagementControllers(mgr, epgStore)
+		return setupManagementControllers(mgr, epgStore, auditDB)
 	case role.RoleTenant:
 		return setupTenantControllers(mgr)
 	default:
@@ -223,7 +244,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.DB) error {
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -242,11 +263,16 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	}
 
 	// AuditSinkReconciler: full implementation in WS3 session/41.
-	// DB is nil here until the CNPG migration runner (WS2) is wired in.
+	// Wrap the raw DB in an SQLAuditStore that implements database.AuditDatabase.
+	var auditStore database.AuditDatabase
+	if auditDB != nil {
+		auditStore = database.NewSQLAuditStore(auditDB)
+	}
 	if err := (&controller.AuditSinkReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("auditsink-controller"),
+		DB:       auditStore,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
