@@ -171,6 +171,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// WS3: verify seam-system carries the seam.ontai.dev/webhook-mode=exempt label
+	// that `compiler enable` stamps before guardian is deployed. Guardian refuses to
+	// register its admission webhook if this label is absent. The label signals that
+	// the bootstrap phase has completed and the cluster is ready for webhook-controlled
+	// admission. WS3, INV-020, CS-INV-004.
+	if err := webhook.CheckBootstrapLabels(ctrl.SetupSignalHandler(), mgr.GetClient()); err != nil {
+		setupLog.Error(err, "bootstrap label check failed; refusing to register admission webhook",
+			"label", webhook.WebhookModeLabelKey,
+			"expected", string(webhook.NamespaceModeExempt),
+		)
+		os.Exit(1)
+	}
+
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
 	// GuardedNamespaceModeResolver wraps KubeNamespaceModeResolver with the global
