@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +23,20 @@ const AuditSinkLabelKey = "seam.ontai.dev/audit-batch"
 // AuditSinkLabelValue is the value that must be present on the audit-batch label.
 const AuditSinkLabelValue = "true"
 
+// auditBatchDataKey is the ConfigMap data key that holds the JSON-encoded event batch.
+const auditBatchDataKey = "events"
+
+// auditBatchEvent is the wire format for a single event in an AuditEventBatch ConfigMap.
+// It matches the fields written by AuditForwarderController.
+type auditBatchEvent struct {
+	SequenceNumber int64  `json:"sequenceNumber"`
+	Subject        string `json:"subject"`
+	Action         string `json:"action"`
+	Resource       string `json:"resource"`
+	Decision       string `json:"decision"`
+	MatchedPolicy  string `json:"matchedPolicy"`
+}
+
 // AuditSinkReconciler watches for AuditEventBatch ConfigMaps delivered by tenant
 // Conductors via the federation channel staging area. It deduplicates events on
 // sequence number, inserts non-duplicate events into the audit_events table, and
@@ -31,8 +47,6 @@ const AuditSinkLabelValue = "true"
 // The reconciler processes ConfigMaps in seam-system labelled with
 // seam.ontai.dev/audit-batch=true. The real federation channel delivery is wired
 // in the Conductor federation session (conductor-schema.md §18).
-//
-// Full implementation is in WS3 of session/41.
 type AuditSinkReconciler struct {
 	// Client is the controller-runtime client for Kubernetes API access.
 	Client client.Client
@@ -74,9 +88,71 @@ func (r *AuditSinkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("AuditSinkReconciler: stub — full implementation in WS3",
-		"name", cm.Name, "namespace", cm.Namespace, "clusterID", clusterID)
-	return ctrl.Result{}, nil
+	// Parse the event batch from the ConfigMap data.
+	raw, ok := cm.Data[auditBatchDataKey]
+	if !ok {
+		logger.Info("audit batch ConfigMap has no 'events' key, deleting",
+			"name", cm.Name, "namespace", cm.Namespace)
+		return ctrl.Result{}, r.deleteConfigMap(ctx, cm)
+	}
+
+	var events []auditBatchEvent
+	if err := json.Unmarshal([]byte(raw), &events); err != nil {
+		logger.Error(err, "failed to parse audit batch events, deleting malformed ConfigMap",
+			"name", cm.Name, "namespace", cm.Namespace)
+		return ctrl.Result{}, r.deleteConfigMap(ctx, cm)
+	}
+
+	inserted, skipped, err := r.processBatch(ctx, clusterID, events)
+	if err != nil {
+		// Return error to trigger requeue — do not delete the ConfigMap yet.
+		return ctrl.Result{}, fmt.Errorf("process audit batch %s/%s: %w", cm.Namespace, cm.Name, err)
+	}
+
+	logger.Info("audit batch processed",
+		"name", cm.Name, "namespace", cm.Namespace,
+		"clusterID", clusterID,
+		"inserted", inserted, "skipped", skipped)
+
+	// Delete the ConfigMap after successful processing.
+	return ctrl.Result{}, r.deleteConfigMap(ctx, cm)
+}
+
+// processBatch deduplicates and inserts events. Returns counts of inserted and skipped.
+func (r *AuditSinkReconciler) processBatch(ctx context.Context, clusterID string, events []auditBatchEvent) (inserted, skipped int, err error) {
+	for _, e := range events {
+		exists, checkErr := r.DB.EventExists(ctx, clusterID, e.SequenceNumber)
+		if checkErr != nil {
+			return inserted, skipped, fmt.Errorf("EventExists(clusterID=%s seq=%d): %w",
+				clusterID, e.SequenceNumber, checkErr)
+		}
+		if exists {
+			skipped++
+			continue
+		}
+		if insertErr := r.DB.InsertEvent(ctx, database.AuditEvent{
+			ClusterID:      clusterID,
+			SequenceNumber: e.SequenceNumber,
+			Subject:        e.Subject,
+			Action:         e.Action,
+			Resource:       e.Resource,
+			Decision:       e.Decision,
+			MatchedPolicy:  e.MatchedPolicy,
+		}); insertErr != nil {
+			return inserted, skipped, fmt.Errorf("InsertEvent(clusterID=%s seq=%d): %w",
+				clusterID, e.SequenceNumber, insertErr)
+		}
+		inserted++
+	}
+	return inserted, skipped, nil
+}
+
+// deleteConfigMap deletes the ConfigMap; IgnoreNotFound so a concurrent delete is fine.
+func (r *AuditSinkReconciler) deleteConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
+	if err := r.Client.Delete(ctx, cm); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("delete ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err)
+	}
+	return nil
 }
 
 // SetupWithManager registers AuditSinkReconciler to watch audit batch ConfigMaps.
