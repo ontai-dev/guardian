@@ -91,6 +91,11 @@ type AdmissionRequest struct {
 	// unconditionally to allow guardian's own bootstrap RBAC to land before
 	// ownership annotation is applied. INV-020, CS-INV-004.
 	BootstrapWindowOpen bool
+	// NSMode is the admission enforcement tier for the request's namespace,
+	// resolved by the NamespaceModeResolver in the handler. The zero value
+	// (empty string) is treated as NamespaceModeEnforce — unknown namespaces
+	// are governed, not exempted.
+	NSMode NamespaceMode
 }
 
 // AdmissionDecision is the result of EvaluateAdmission.
@@ -98,43 +103,76 @@ type AdmissionDecision struct {
 	// Allowed indicates whether the resource is permitted to proceed.
 	Allowed bool
 	// Reason is a human-readable explanation of the decision.
-	// Empty when Allowed=true.
+	// Empty when Allowed=true in Enforce mode.
+	// In Observe mode: contains the denial reason that would have been used if
+	// the namespace were in Enforce mode. Allowed=true even when Reason is set.
 	Reason string
+	// ObservedDeny is true when the request is in NamespaceModeObserve and would
+	// have been denied in NamespaceModeEnforce. The admission handler logs this
+	// as a would-deny observation. Allowed=true regardless when ObservedDeny=true.
+	ObservedDeny bool
 }
+
+// denyReason is the canonical denial message returned for RBAC resources lacking
+// the ownership annotation. Shared by Enforce mode deny and Observe mode would-deny.
+const denyReason = "resource must carry annotation ontai.dev/rbac-owner=guardian; " +
+	"all RBAC resources on the management cluster are owned exclusively by " +
+	"guardian (CS-INV-001)"
 
 // EvaluateAdmission applies the ONT RBAC ownership policy to an incoming admission
 // request. It is a pure function: no side effects, no Kubernetes API calls, no I/O.
 //
 // Evaluation order:
-//  1. If Kind is not in InterceptedKinds, allow unconditionally.
-//  2. If the bootstrap RBAC window is open, allow unconditionally. The window is
+//  1. If NSMode is NamespaceModeExempt: allow immediately without any further
+//     evaluation. Applied permanently to seam-system and kube-system.
+//  2. If Kind is not in InterceptedKinds: allow unconditionally.
+//  3. If the bootstrap RBAC window is open: allow unconditionally. The window is
 //     open from guardian startup until the admission webhook is registered.
 //     It closes permanently on registration. INV-020, CS-INV-004.
-//  3. If annotation ontai.dev/rbac-owner=guardian is present, allow.
-//  4. Otherwise, reject with a structured error message.
+//  4. If annotation ontai.dev/rbac-owner=guardian is present: allow.
+//  5. If NSMode is NamespaceModeObserve: allow with ObservedDeny=true and the
+//     denial reason recorded. The handler logs the observation.
+//  6. Otherwise (Enforce mode or unlabelled namespace): deny.
 func EvaluateAdmission(req AdmissionRequest) AdmissionDecision {
+	// Gate 1 — Exempt namespace: skip all evaluation.
+	// seam-system and kube-system carry this label permanently to prevent
+	// guardian's own operator machinery from being blocked at admission.
+	if req.NSMode == NamespaceModeExempt {
+		return AdmissionDecision{Allowed: true}
+	}
+
+	// Gate 2 — Non-intercepted kind: always allow.
 	if !InterceptedKinds[req.Kind] {
 		return AdmissionDecision{Allowed: true}
 	}
 
-	// Bootstrap RBAC window: admit intercepted RBAC resources unconditionally
-	// while the window is open. The window is open from guardian startup until
-	// the admission webhook server is registered. It then closes permanently.
-	// Resources admitted through this window are reconciled by guardian on startup:
-	// compliant resources are ownership-annotated; non-compliant are flagged.
-	// INV-020, CS-INV-004.
+	// Gate 3 — Bootstrap RBAC window: admit intercepted RBAC resources
+	// unconditionally while the window is open. Resources admitted here are
+	// reconciled by guardian on startup. INV-020, CS-INV-004.
 	if req.BootstrapWindowOpen {
 		return AdmissionDecision{Allowed: true}
 	}
 
+	// Gate 4 — Ownership annotation: allow owned resources.
 	if req.Annotations[AnnotationRBACOwner] == AnnotationRBACOwnerValue {
 		return AdmissionDecision{Allowed: true}
 	}
 
+	// Gates 5 & 6 — Would-deny point. Behaviour depends on namespace mode.
+
+	// Observe mode: run full evaluation but always return allowed.
+	// The handler will log the ObservedDeny observation for monitoring.
+	if req.NSMode == NamespaceModeObserve {
+		return AdmissionDecision{
+			Allowed:      true,
+			ObservedDeny: true,
+			Reason:       denyReason,
+		}
+	}
+
+	// Enforce mode (default for unlabelled namespaces — zero value of NSMode).
 	return AdmissionDecision{
 		Allowed: false,
-		Reason: "resource must carry annotation ontai.dev/rbac-owner=guardian; " +
-			"all RBAC resources on the management cluster are owned exclusively by " +
-			"guardian (CS-INV-001)",
+		Reason:  denyReason,
 	}
 }

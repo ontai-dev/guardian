@@ -155,7 +155,8 @@ func main() {
 	// inside Register() — from that point all RBAC resources require the ownership annotation.
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	if err := webhookServer.Register(bootstrapWindow); err != nil {
+	namespaceModeResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
+	if err := webhookServer.Register(bootstrapWindow, namespaceModeResolver); err != nil {
 		setupLog.Error(err, "unable to register admission webhook")
 		os.Exit(1)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -17,6 +18,11 @@ import (
 type RBACAdmissionHandler struct {
 	decoder         *admission.Decoder
 	bootstrapWindow *BootstrapWindow
+	// namespaceMode resolves the per-namespace enforcement tier before calling
+	// EvaluateAdmission. Exempt namespaces bypass all policy evaluation.
+	// Observe namespaces run full evaluation but always return allowed.
+	// INV-020, CS-INV-004.
+	namespaceMode NamespaceModeResolver
 }
 
 // partialObject is used for partial JSON unmarshalling of the admitted resource.
@@ -28,21 +34,35 @@ type partialObject struct {
 }
 
 // Handle implements admission.Handler.
-// It extracts the resource kind and annotations from the admission request,
-// reads the current bootstrap window state, delegates to EvaluateAdmission,
-// and returns the appropriate response.
-func (h *RBACAdmissionHandler) Handle(_ context.Context, req admission.Request) admission.Response {
+// It resolves the per-namespace enforcement tier, extracts the resource kind
+// and annotations from the admission request, reads the current bootstrap window
+// state, delegates to EvaluateAdmission, and returns the appropriate response.
+// When EvaluateAdmission returns ObservedDeny=true (observe mode would-deny),
+// the handler logs the observation but still returns allowed.
+func (h *RBACAdmissionHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	var obj partialObject
 	if err := json.Unmarshal(req.Object.Raw, &obj); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+
+	nsMode := h.namespaceMode.ResolveMode(ctx, req.Namespace)
 
 	decision := EvaluateAdmission(AdmissionRequest{
 		Kind:                req.Kind.Kind,
 		Operation:           AdmissionOperation(req.Operation),
 		Annotations:         obj.Metadata.Annotations,
 		BootstrapWindowOpen: h.bootstrapWindow.IsOpen(),
+		NSMode:              nsMode,
 	})
+
+	if decision.ObservedDeny {
+		log.FromContext(ctx).Info("would-deny observation",
+			"namespace", req.Namespace,
+			"kind", req.Kind.Kind,
+			"operation", req.Operation,
+			"reason", decision.Reason,
+		)
+	}
 
 	if decision.Allowed {
 		return admission.Allowed("")

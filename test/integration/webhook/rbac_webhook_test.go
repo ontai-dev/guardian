@@ -102,10 +102,19 @@ func TestMain(m *testing.M) {
 	// Register the RBAC admission webhook. The bootstrap window is created open
 	// and permanently closed inside Register() — by the time the webhook server
 	// begins serving, the window is closed and normal annotation enforcement applies.
+	// A StaticNamespaceModeResolver is used in tests: kube-system is exempt (matching
+	// the production ValidatingWebhookConfiguration NamespaceSelector), all other
+	// namespaces default to enforce.
 	// INV-020, CS-INV-004.
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	if err := webhookServer.Register(bootstrapWindow); err != nil {
+	nsModeResolver := &webhook.StaticNamespaceModeResolver{
+		Modes: map[string]webhook.NamespaceMode{
+			"kube-system": webhook.NamespaceModeExempt,
+		},
+		DefaultMode: webhook.NamespaceModeEnforce,
+	}
+	if err := webhookServer.Register(bootstrapWindow, nsModeResolver); err != nil {
 		panic("failed to register admission webhook: " + err.Error())
 	}
 

@@ -26,10 +26,14 @@ func NewAdmissionWebhookServer(mgr ctrl.Manager) *AdmissionWebhookServer {
 // Register wires the RBACAdmissionHandler into the manager's webhook server at
 // WebhookPath ("/validate-rbac") and permanently closes the bootstrap RBAC window.
 //
-// The handler is constructed with the provided window. The window is read on each
-// incoming admission request to determine bootstrap window state. After the handler
-// is registered, the window is closed — from this point forward all intercepted
-// RBAC resources must carry the ontai.dev/rbac-owner=guardian annotation.
+// The handler is constructed with the provided window and namespaceMode resolver.
+// The namespace mode resolver is called on each incoming request to determine the
+// per-namespace enforcement tier (exempt/observe/enforce) before policy evaluation.
+//
+// The window is read on each incoming admission request to determine bootstrap
+// window state. After the handler is registered, the window is closed — from this
+// point forward all intercepted RBAC resources must carry the
+// ontai.dev/rbac-owner=guardian annotation.
 //
 // Register must be called after the manager is created and before mgr.Start.
 // The manager enforces leader election — the webhook server becomes active only
@@ -37,8 +41,11 @@ func NewAdmissionWebhookServer(mgr ctrl.Manager) *AdmissionWebhookServer {
 //
 // INV-020: the bootstrap RBAC window closes permanently when the admission webhook
 // becomes operational. The close happens here, on first successful registration.
-func (s *AdmissionWebhookServer) Register(window *BootstrapWindow) error {
-	handler := &RBACAdmissionHandler{bootstrapWindow: window}
+func (s *AdmissionWebhookServer) Register(window *BootstrapWindow, namespaceMode NamespaceModeResolver) error {
+	handler := &RBACAdmissionHandler{
+		bootstrapWindow: window,
+		namespaceMode:   namespaceMode,
+	}
 	s.mgr.GetWebhookServer().Register(WebhookPath, &admission.Webhook{Handler: handler})
 	// Close the bootstrap RBAC window. The webhook handler is now registered and
 	// will begin enforcing the ownership annotation on all intercepted RBAC
