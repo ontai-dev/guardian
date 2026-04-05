@@ -1,12 +1,18 @@
 // Binary guardian is the controller-runtime manager entry point for the
 // guardian operator.
 //
-// It registers all reconcilers (RBACPolicyReconciler, RBACProfileReconciler,
-// IdentityBindingReconciler, EPGReconciler) and starts the manager with leader
-// election. The admission webhook server is registered here once implemented.
+// GUARDIAN_ROLE is read at the very start of main, before any initialisation.
+// An absent or invalid GUARDIAN_ROLE causes an immediate structured exit.
+// guardian-schema.md §15.
 //
-// Namespaces and lease names follow guardian-design.md Section 1 and the
-// Seam Platform Constitution Section 7 (seam-system canonical namespace).
+// Controller sets are role-gated:
+//   - Both roles: RBACPolicy, RBACProfile, IdentityProvider, IdentityBinding,
+//     Bootstrap, PermissionService gRPC.
+//   - role=management adds: PermissionSet, EPG, AuditSink.
+//   - role=tenant adds: AuditForwarder.
+//
+// The CNPG migration runner (WS2 session/41) runs before controller registration
+// when role=management. guardian-schema.md §3, §16.
 package main
 
 import (
@@ -25,6 +31,7 @@ import (
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/controller"
 	"github.com/ontai-dev/guardian/internal/permissionservice"
+	"github.com/ontai-dev/guardian/internal/role"
 	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
@@ -36,6 +43,11 @@ func init() {
 }
 
 func main() {
+	// Read GUARDIAN_ROLE before any other initialisation.
+	// An absent or invalid value causes an immediate structured exit.
+	// guardian-schema.md §15.
+	guardianRole := role.ReadFromEnv()
+
 	var (
 		metricsAddr          string
 		healthProbeAddr      string
@@ -62,6 +74,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog := ctrl.Log.WithName("setup")
+	setupLog.Info("guardian starting", "role", string(guardianRole))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
@@ -82,65 +95,20 @@ func main() {
 	// Create the in-memory EPG store shared between EPGReconciler and PermissionService.
 	epgStore := permissionservice.NewInMemoryEPGStore()
 
-	if err := (&controller.RBACPolicyReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "RBACPolicy")
+	// Register controllers shared by both roles.
+	if err := setupSharedControllers(mgr); err != nil {
+		setupLog.Error(err, "unable to set up shared controllers")
 		os.Exit(1)
 	}
 
-	if err := (&controller.RBACProfileReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "RBACProfile")
-		os.Exit(1)
-	}
-
-	if err := (&controller.IdentityBindingReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "IdentityBinding")
-		os.Exit(1)
-	}
-
-	if err := (&controller.IdentityProviderReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identityprovider-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "IdentityProvider")
-		os.Exit(1)
-	}
-
-	if err := (&controller.PermissionSetReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("permissionset-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PermissionSet")
-		os.Exit(1)
-	}
-
-	if err := (&controller.EPGReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("epg-controller"),
-		Store:    epgStore,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "EPG")
+	// Register role-specific controllers.
+	if err := setupRoleControllers(mgr, guardianRole, epgStore); err != nil {
+		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
 
 	// Start the PermissionService gRPC server in the background.
-	// It serves the four operations (CheckPermission, ListPermissions, WhoCanDo,
-	// ExplainDecision) from the in-memory EPG updated by EPGReconciler.
-	// guardian-schema.md §10.
+	// Runs in both roles. guardian-schema.md §15.
 	svc := permissionservice.NewService(epgStore)
 	go func() {
 		if err := permissionservice.ListenAndServe(grpcAddr, svc); err != nil {
@@ -148,15 +116,9 @@ func main() {
 		}
 	}()
 
-	// CS-INV-001: admission webhook is the enforcement mechanism; it must be registered
-	// before the manager starts. CS-INV-006: leader election is enforced by the manager —
-	// the webhook server becomes active only after the leader lock is acquired.
-	// INV-020: the bootstrap RBAC window starts open here and is permanently closed
-	// inside Register() — from that point all RBAC resources require the ownership annotation.
-	// WS2: construct the in-memory mode gate and enforcement registry shared between
-	// the BootstrapController and the GuardedNamespaceModeResolver. The gate starts in
-	// Initialising state; BootstrapController advances it to ObserveOnly when all
-	// RBACProfiles are provisioned. INV-020, CS-INV-004.
+	// CS-INV-001: admission webhook is the enforcement mechanism.
+	// CS-INV-006: leader election enforced by the manager.
+	// INV-020: bootstrap RBAC window starts open here.
 	modeGate := webhook.NewWebhookModeGate()
 	enforcementRegistry := webhook.NewNamespaceEnforcementRegistry()
 
@@ -171,11 +133,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// WS3: verify seam-system carries the seam.ontai.dev/webhook-mode=exempt label
-	// that `compiler enable` stamps before guardian is deployed. Guardian refuses to
-	// register its admission webhook if this label is absent. The label signals that
-	// the bootstrap phase has completed and the cluster is ready for webhook-controlled
-	// admission. WS3, INV-020, CS-INV-004.
+	// WS3: verify seam-system carries seam.ontai.dev/webhook-mode=exempt.
+	// guardian-schema.md §4, INV-020.
 	if err := webhook.CheckBootstrapLabels(ctrl.SetupSignalHandler(), mgr.GetClient()); err != nil {
 		setupLog.Error(err, "bootstrap label check failed; refusing to register admission webhook",
 			"label", webhook.WebhookModeLabelKey,
@@ -186,19 +145,12 @@ func main() {
 
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	// GuardedNamespaceModeResolver wraps KubeNamespaceModeResolver with the global
-	// mode gate and per-namespace enforcement registry. During bootstrap (Initialising
-	// mode), all non-exempt namespaces observe. After ObserveOnly, promoted namespaces
-	// enforce. INV-020.
 	baseResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
 	namespaceModeResolver := webhook.NewGuardedNamespaceModeResolver(baseResolver, modeGate, enforcementRegistry)
 	if err := webhookServer.Register(bootstrapWindow, namespaceModeResolver); err != nil {
 		setupLog.Error(err, "unable to register admission webhook")
 		os.Exit(1)
 	}
-	// Register the spec.lineage immutability gate for guardian root-declaration CRDs.
-	// Rejects any UPDATE that modifies spec.lineage on RBACPolicy, RBACProfile,
-	// IdentityBinding, IdentityProvider, or PermissionSet. CLAUDE.md §14 Decision 1.
 	webhookServer.RegisterLineage()
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -210,9 +162,114 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting guardian manager")
+	setupLog.Info("starting guardian manager", "role", string(guardianRole))
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// setupSharedControllers registers the controllers that run in both roles.
+// guardian-schema.md §15.
+func setupSharedControllers(mgr ctrl.Manager) error {
+	if err := (&controller.RBACPolicyReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	if err := (&controller.RBACProfileReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	if err := (&controller.IdentityBindingReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	if err := (&controller.IdentityProviderReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("identityprovider-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// setupRoleControllers registers the controllers specific to the given role.
+// guardian-schema.md §15.
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore) error {
+	switch r {
+	case role.RoleManagement:
+		return setupManagementControllers(mgr, epgStore)
+	case role.RoleTenant:
+		return setupTenantControllers(mgr)
+	default:
+		// ParseRole already prevents this path; guard defensively.
+		return nil
+	}
+}
+
+// setupManagementControllers registers controllers that run only when role=management.
+// guardian-schema.md §15.
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore) error {
+	if err := (&controller.PermissionSetReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("permissionset-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	if err := (&controller.EPGReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("epg-controller"),
+		Store:    epgStore,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	// AuditSinkReconciler: full implementation in WS3 session/41.
+	// DB is nil here until the CNPG migration runner (WS2) is wired in.
+	if err := (&controller.AuditSinkReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("auditsink-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// setupTenantControllers registers controllers that run only when role=tenant.
+// guardian-schema.md §15.
+func setupTenantControllers(mgr ctrl.Manager) error {
+	clusterID := os.Getenv("CLUSTER_ID")
+
+	// AuditForwarderController: full implementation in WS4 session/41.
+	auditCh := make(chan controller.AuditForwarderEvent, 256)
+	if err := (&controller.AuditForwarderController{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorderFor("auditforwarder-controller"),
+		EventCh:   auditCh,
+		ClusterID: clusterID,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	return nil
 }
