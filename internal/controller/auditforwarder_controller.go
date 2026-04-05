@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -45,8 +46,6 @@ const DefaultForwarderBatchSize = 100
 // seam.ontai.dev/audit-batch=true and the originating cluster ID in annotations.
 // Conductor's federation channel (conductor-schema.md §18) picks up and transports
 // these ConfigMaps to the management Guardian AuditSinkReconciler.
-//
-// Full implementation is in WS4 of session/41.
 type AuditForwarderController struct {
 	// Client is the controller-runtime client for Kubernetes API access.
 	Client client.Client
@@ -145,6 +144,31 @@ func (c *AuditForwarderController) flush(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("audit-forwarder")
 	logger.Info("flushing audit batch", "events", len(batch), "sequence", seq)
 
+	// Serialize events to the wire format expected by AuditSinkReconciler.
+	type wireEvent struct {
+		SequenceNumber int64  `json:"sequenceNumber"`
+		Subject        string `json:"subject"`
+		Action         string `json:"action"`
+		Resource       string `json:"resource"`
+		Decision       string `json:"decision"`
+		MatchedPolicy  string `json:"matchedPolicy"`
+	}
+	wire := make([]wireEvent, len(batch))
+	for i, e := range batch {
+		wire[i] = wireEvent{
+			SequenceNumber: seq*int64(len(batch)) + int64(i) + 1,
+			Subject:        e.Subject,
+			Action:         e.Action,
+			Resource:       e.Resource,
+			Decision:       e.Decision,
+			MatchedPolicy:  e.MatchedPolicy,
+		}
+	}
+	eventsJSON, err := json.Marshal(wire)
+	if err != nil {
+		return fmt.Errorf("marshal audit batch: %w", err)
+	}
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "audit-batch-",
@@ -153,13 +177,15 @@ func (c *AuditForwarderController) flush(ctx context.Context) error {
 				AuditForwarderLabelKey: AuditForwarderLabelValue,
 			},
 			Annotations: map[string]string{
-				"seam.ontai.dev/cluster-id":       c.ClusterID,
-				"seam.ontai.dev/batch-sequence":   fmt.Sprint(seq),
+				"seam.ontai.dev/cluster-id":        c.ClusterID,
+				"seam.ontai.dev/batch-sequence":    fmt.Sprint(seq),
 				"seam.ontai.dev/audit-event-count": fmt.Sprint(len(batch)),
 			},
 		},
+		Data: map[string]string{
+			"events": string(eventsJSON),
+		},
 	}
-	// Stub: full serialisation of batch events into ConfigMap.Data is in WS4.
 	return c.Client.Create(ctx, cm)
 }
 
