@@ -153,9 +153,32 @@ func main() {
 	// the webhook server becomes active only after the leader lock is acquired.
 	// INV-020: the bootstrap RBAC window starts open here and is permanently closed
 	// inside Register() — from that point all RBAC resources require the ownership annotation.
+	// WS2: construct the in-memory mode gate and enforcement registry shared between
+	// the BootstrapController and the GuardedNamespaceModeResolver. The gate starts in
+	// Initialising state; BootstrapController advances it to ObserveOnly when all
+	// RBACProfiles are provisioned. INV-020, CS-INV-004.
+	modeGate := webhook.NewWebhookModeGate()
+	enforcementRegistry := webhook.NewNamespaceEnforcementRegistry()
+
+	if err := (&controller.BootstrapController{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("bootstrap-controller"),
+		Gate:     modeGate,
+		Registry: enforcementRegistry,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Bootstrap")
+		os.Exit(1)
+	}
+
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
-	namespaceModeResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
+	// GuardedNamespaceModeResolver wraps KubeNamespaceModeResolver with the global
+	// mode gate and per-namespace enforcement registry. During bootstrap (Initialising
+	// mode), all non-exempt namespaces observe. After ObserveOnly, promoted namespaces
+	// enforce. INV-020.
+	baseResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
+	namespaceModeResolver := webhook.NewGuardedNamespaceModeResolver(baseResolver, modeGate, enforcementRegistry)
 	if err := webhookServer.Register(bootstrapWindow, namespaceModeResolver); err != nil {
 		setupLog.Error(err, "unable to register admission webhook")
 		os.Exit(1)
