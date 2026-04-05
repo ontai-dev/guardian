@@ -6,7 +6,7 @@
 // election. The admission webhook server is registered here once implemented.
 //
 // Namespaces and lease names follow guardian-design.md Section 1 and the
-// ONT Platform Constitution Section 6.
+// Seam Platform Constitution Section 7 (seam-system canonical namespace).
 package main
 
 import (
@@ -69,7 +69,7 @@ func main() {
 		HealthProbeBindAddress:  healthProbeAddr,
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "guardian-leader",
-		LeaderElectionNamespace: "security-system",
+		LeaderElectionNamespace: "seam-system",
 		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
 			Port: webhookPort,
 		}),
