@@ -12,11 +12,17 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
+
+// rbacPolicyFinalizer is added to every RBACPolicy on first reconcile to ensure
+// cleanup events are emitted before the object is fully removed.
+// INV-006: deletion triggers events, not Jobs.
+const rbacPolicyFinalizer = "security.ontai.dev/rbacpolicy"
 
 // RBACPolicyReconciler watches RBACPolicy CRs and validates their structure.
 //
@@ -61,6 +67,26 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get RBACPolicy %s: %w", req.NamespacedName, err)
+	}
+
+	// Step A2 — Handle deletion. INV-006: emit event, remove finalizer, return. No Job.
+	if !policy.DeletionTimestamp.IsZero() {
+		r.Recorder.Event(policy, corev1.EventTypeNormal, "Deleting",
+			"RBACPolicy is being deleted; releasing finalizer.")
+		controllerutil.RemoveFinalizer(policy, rbacPolicyFinalizer)
+		if err := r.Client.Update(ctx, policy); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove rbacpolicy finalizer: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Step A3 — Ensure finalizer is present on first observation.
+	if !controllerutil.ContainsFinalizer(policy, rbacPolicyFinalizer) {
+		controllerutil.AddFinalizer(policy, rbacPolicyFinalizer)
+		if err := r.Client.Update(ctx, policy); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add rbacpolicy finalizer: %w", err)
+		}
+		return ctrl.Result{}, nil // Requeue: the Update triggers a new reconcile.
 	}
 
 	// Step B — Set up deferred status patch.
