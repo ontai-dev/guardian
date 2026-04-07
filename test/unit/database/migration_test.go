@@ -416,6 +416,122 @@ func TestMigrationRunner_SkipsAlreadyApplied(t *testing.T) {
 	}
 }
 
+// TestMigrationRunner_Migration001_AuditEventsColumns verifies that the DDL executed
+// for migration 001 contains all columns required by InsertEvent and EventExists.
+// guardian-schema.md §3 Step 1.
+func TestMigrationRunner_Migration001_AuditEventsColumns(t *testing.T) {
+	db := newSimpleDB()
+	runner := database.NewMigrationRunner(db)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var auditSQL string
+	for _, exec := range db.execs {
+		if strings.Contains(exec, "audit_events") && strings.Contains(exec, "CREATE") {
+			auditSQL = exec
+			break
+		}
+	}
+	if auditSQL == "" {
+		t.Fatal("audit_events CREATE TABLE statement not found in exec calls")
+	}
+
+	required := []string{
+		"cluster_id", "subject", "action", "resource",
+		"decision", "matched_policy", "sequence_number", "timestamp",
+	}
+	for _, col := range required {
+		if !strings.Contains(auditSQL, col) {
+			t.Errorf("audit_events migration DDL missing required column %q", col)
+		}
+	}
+}
+
+// TestMigrationRunner_Migration002_PermissionCacheColumns verifies that the DDL for
+// migration 002 contains all columns required by the permission_cache table.
+func TestMigrationRunner_Migration002_PermissionCacheColumns(t *testing.T) {
+	db := newSimpleDB()
+	runner := database.NewMigrationRunner(db)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var cacheSQL string
+	for _, exec := range db.execs {
+		if strings.Contains(exec, "permission_cache") && strings.Contains(exec, "CREATE") {
+			cacheSQL = exec
+			break
+		}
+	}
+	if cacheSQL == "" {
+		t.Fatal("permission_cache CREATE TABLE statement not found in exec calls")
+	}
+
+	required := []string{"subject", "action", "resource", "result", "expires_at"}
+	for _, col := range required {
+		if !strings.Contains(cacheSQL, col) {
+			t.Errorf("permission_cache migration DDL missing required column %q", col)
+		}
+	}
+}
+
+// TestMigrationRunner_Migration003_IdentityResolutionLogColumns verifies that the DDL
+// for migration 003 contains all columns required by the identity_resolution_log table.
+func TestMigrationRunner_Migration003_IdentityResolutionLogColumns(t *testing.T) {
+	db := newSimpleDB()
+	runner := database.NewMigrationRunner(db)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var logSQL string
+	for _, exec := range db.execs {
+		if strings.Contains(exec, "identity_resolution_log") && strings.Contains(exec, "CREATE") {
+			logSQL = exec
+			break
+		}
+	}
+	if logSQL == "" {
+		t.Fatal("identity_resolution_log CREATE TABLE statement not found in exec calls")
+	}
+
+	required := []string{"subject", "provider_name", "resolved_profile", "resolved_at"}
+	for _, col := range required {
+		if !strings.Contains(logSQL, col) {
+			t.Errorf("identity_resolution_log migration DDL missing required column %q", col)
+		}
+	}
+}
+
+// TestMigrationRunner_HaltsOnFailureBeforeNextMigration verifies that if migration N
+// fails, migration N+1 is not applied — the runner halts at the first failure.
+// Uses forceMigrationError=2 which causes permission_cache DDL to fail after
+// audit_events has already been successfully applied.
+func TestMigrationRunner_HaltsOnFailureBeforeNextMigration(t *testing.T) {
+	db := newStubDB()
+	db.forceMigrationError = 2 // fail migration 2 (permission_cache)
+	runner := database.NewMigrationRunner(db)
+
+	err := runner.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected Run to return an error when migration 2 fails")
+	}
+
+	// Migration 1 should have been applied (it precedes the failure).
+	if !db.migrations[1] {
+		t.Error("expected migration 1 to be recorded (applied before failure)")
+	}
+	// Migration 2 DDL failed — its recording INSERT should never have executed.
+	if db.migrations[2] {
+		t.Error("migration 2 was recorded despite its DDL failing")
+	}
+	// Migration 3 should never have been attempted.
+	if db.migrations[3] {
+		t.Error("migration 3 was applied despite migration 2 failing (halt violated)")
+	}
+}
+
 // TestConnConfig_DSN verifies the DSN format.
 func TestConnConfig_DSN(t *testing.T) {
 	cfg := database.ConnConfig{
