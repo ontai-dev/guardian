@@ -232,6 +232,16 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 		return err
 	}
 
+	// PermissionSnapshotReconciler: runs under both roles.
+	// Both management and tenant need freshness tracking. guardian-schema.md §7.
+	if err := (&controller.PermissionSnapshotReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("permissionsnapshot-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
 	return nil
 }
 
