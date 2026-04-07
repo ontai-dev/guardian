@@ -58,6 +58,26 @@ func BuildPermissionSnapshot(
 		principalPerms = []securityv1alpha1.PrincipalPermissionEntry{}
 	}
 
+	// Build Subjects from principalPerms so the formal spec.subjects field
+	// (guardian schema §7, SubjectEntry) is populated alongside the legacy
+	// spec.principalPermissions field. Conductor's SnapshotPullLoop prefers
+	// spec.subjects when present.
+	subjects := make([]securityv1alpha1.SubjectEntry, 0, len(principalPerms))
+	for _, pp := range principalPerms {
+		se := securityv1alpha1.SubjectEntry{
+			SubjectName: pp.PrincipalRef,
+			SubjectKind: securityv1alpha1.SubjectKindUser, // default; overridden by IdentityBinding correlation in future
+		}
+		for _, op := range pp.AllowedOperations {
+			se.Permissions = append(se.Permissions, securityv1alpha1.PermissionEntry{
+				APIGroups: []string{op.APIGroup},
+				Resources: []string{op.Resource},
+				Verbs:     op.Verbs,
+			})
+		}
+		subjects = append(subjects, se)
+	}
+
 	return &securityv1alpha1.PermissionSnapshot{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: securityv1alpha1.GroupVersion.String(),
@@ -71,7 +91,9 @@ func BuildPermissionSnapshot(
 			TargetCluster:        targetCluster,
 			Version:              version,
 			GeneratedAt:          generatedAt,
+			SnapshotTimestamp:    &generatedAt,  // canonical timestamp for freshness evaluation
 			PrincipalPermissions: principalPerms,
+			Subjects:             subjects,       // formal CRD field; preferred by Conductor pull loop
 		},
 	}
 }
