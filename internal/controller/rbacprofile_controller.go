@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,6 +18,11 @@ import (
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
+
+// rbacFieldOwner is the server-side apply field manager name for RBACProfileReconciler.
+// All three RBAC resources (ServiceAccount, ClusterRole, ClusterRoleBinding) use this
+// field owner so that re-applying an unchanged resource is a no-op. INV-004.
+const rbacFieldOwner = "guardian"
 
 // CS-INV-005: Provisioned=true is set ONLY in Step I of this Reconcile method.
 // No other code path in this file, this package, or any other package may set
@@ -58,6 +64,9 @@ const epgRecomputeAnnotation = "ontai.dev/epg-recompute-requested"
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=rbacpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete;bind;escalate
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -304,6 +313,29 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	logger.Info("RBACProfile provisioned",
 		"name", profile.Name, "namespace", profile.Namespace)
 
+	// Step J — Materialise Kubernetes RBAC resources for this profile.
+	//
+	// provisioned=true is committed ONLY after Step J succeeds (see explicit status
+	// patch below). If Step J fails, provisioned is reset to false here so the
+	// deferred patch commits the failure state. CS-INV-005: this is the sole path
+	// through which provisioned=true is observed on the cluster.
+	if err := r.provisionRBACResources(ctx, profile); err != nil {
+		profile.Status.Provisioned = false
+		profile.Status.LastProvisionedAt = nil
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			"RBACMaterializationFailed",
+			err.Error(),
+			profile.Generation,
+		)
+		r.Recorder.Event(profile, corev1.EventTypeWarning, "RBACMaterializationFailed", err.Error())
+		logger.Error(err, "Step J: RBAC resource provisioning failed",
+			"name", profile.Name, "namespace", profile.Namespace)
+		return ctrl.Result{}, err
+	}
+
 	// Explicitly commit the status before signaling EPGReconciler.
 	// The deferred status patch fires AFTER this function returns, but the EPGReconciler
 	// is triggered by the metadata patch below. If EPGReconciler runs before the deferred
@@ -348,4 +380,163 @@ func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&securityv1alpha1.RBACProfile{}).
 		Named("rbacprofile").
 		Complete(r)
+}
+
+// ---------------------------------------------------------------------------
+// Step J — RBAC materialisation helpers
+// ---------------------------------------------------------------------------
+
+// provisionRBACResources applies the three RBAC resources for the given profile
+// using server-side apply. All three are idempotent — re-applying an unchanged
+// resource is a no-op. INV-004: guardian owns all RBAC.
+//
+// When the principalRef is not in system:serviceaccount:<ns>:<name> format,
+// the profile governs a named identity (e.g. "acme-admin") that does not
+// correspond to a Kubernetes ServiceAccount — no resources are provisioned.
+func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, profile *securityv1alpha1.RBACProfile) error {
+	ns, saName, ok := parsePrincipalRef(profile.Spec.PrincipalRef)
+	if !ok {
+		// Named identity principal — no Kubernetes SA/ClusterRole/CRB to provision.
+		return nil
+	}
+
+	rules, err := r.resolvePermissionSetRules(ctx, profile)
+	if err != nil {
+		return fmt.Errorf("resolving PermissionSet rules: %w", err)
+	}
+
+	// ServiceAccount.
+	sa := buildServiceAccount(saName, ns)
+	if err := r.Client.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+		return fmt.Errorf("apply ServiceAccount %s/%s: %w", ns, saName, err)
+	}
+
+	// ClusterRole.
+	clusterRoleName := "seam:" + saName
+	cr := buildClusterRole(clusterRoleName, rules)
+	if err := r.Client.Patch(ctx, cr, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+		return fmt.Errorf("apply ClusterRole %s: %w", clusterRoleName, err)
+	}
+
+	// ClusterRoleBinding.
+	crb := buildClusterRoleBinding(clusterRoleName, saName, ns)
+	if err := r.Client.Patch(ctx, crb, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+		return fmt.Errorf("apply ClusterRoleBinding %s: %w", clusterRoleName, err)
+	}
+
+	return nil
+}
+
+// resolvePermissionSetRules fetches each PermissionSet referenced in the profile's
+// PermissionDeclarations and converts its rules to rbacv1.PolicyRule values.
+// Step G already verified all PermissionSets exist; this re-fetches from cache.
+func (r *RBACProfileReconciler) resolvePermissionSetRules(ctx context.Context, profile *securityv1alpha1.RBACProfile) ([]rbacv1.PolicyRule, error) {
+	var rules []rbacv1.PolicyRule
+	for _, decl := range profile.Spec.PermissionDeclarations {
+		ps := &securityv1alpha1.PermissionSet{}
+		key := types.NamespacedName{Name: decl.PermissionSetRef, Namespace: profile.Namespace}
+		if err := r.Client.Get(ctx, key, ps); err != nil {
+			return nil, fmt.Errorf("get PermissionSet %q: %w", decl.PermissionSetRef, err)
+		}
+		for _, p := range ps.Spec.Permissions {
+			verbs := make([]string, len(p.Verbs))
+			for i, v := range p.Verbs {
+				verbs[i] = string(v)
+			}
+			rules = append(rules, rbacv1.PolicyRule{
+				APIGroups:     p.APIGroups,
+				Resources:     p.Resources,
+				Verbs:         verbs,
+				ResourceNames: p.ResourceNames,
+			})
+		}
+	}
+	return rules, nil
+}
+
+// parsePrincipalRef parses a principalRef of the form
+// "system:serviceaccount:<namespace>:<name>" and returns the extracted
+// namespace and service account name. Returns ok=false for any other format.
+func parsePrincipalRef(principalRef string) (namespace, name string, ok bool) {
+	const prefix = "system:serviceaccount:"
+	if !strings.HasPrefix(principalRef, prefix) {
+		return "", "", false
+	}
+	rest := principalRef[len(prefix):]
+	idx := strings.IndexByte(rest, ':')
+	if idx <= 0 || idx >= len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:idx], rest[idx+1:], true
+}
+
+// buildServiceAccount constructs a ServiceAccount for server-side apply.
+func buildServiceAccount(name, namespace string) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				"ontai.dev/rbac-owner": "guardian",
+			},
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "guardian",
+			},
+		},
+	}
+}
+
+// buildClusterRole constructs a ClusterRole for server-side apply.
+func buildClusterRole(name string, rules []rbacv1.PolicyRule) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRole",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Annotations: map[string]string{
+				"ontai.dev/rbac-owner": "guardian",
+			},
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "guardian",
+			},
+		},
+		Rules: rules,
+	}
+}
+
+// buildClusterRoleBinding constructs a ClusterRoleBinding for server-side apply.
+func buildClusterRoleBinding(name, saName, saNamespace string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Annotations: map[string]string{
+				"ontai.dev/rbac-owner": "guardian",
+			},
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "guardian",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     name,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: saNamespace,
+			},
+		},
+	}
 }
