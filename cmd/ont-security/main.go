@@ -169,16 +169,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// WS3: verify seam-system carries seam.ontai.dev/webhook-mode=exempt.
-	// guardian-schema.md §4, INV-020.
-	if err := webhook.CheckBootstrapLabels(ctrl.SetupSignalHandler(), mgr.GetClient()); err != nil {
-		setupLog.Error(err, "bootstrap label check failed; refusing to register admission webhook",
-			"label", webhook.WebhookModeLabelKey,
-			"expected", string(webhook.NamespaceModeExempt),
-		)
-		os.Exit(1)
-	}
-
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
 	baseResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
@@ -188,6 +178,16 @@ func main() {
 		os.Exit(1)
 	}
 	webhookServer.RegisterLineage()
+
+	// Register the bootstrap label check as a post-cache Runnable. Runs for both
+	// roles. CheckBootstrapLabels reads the seam-system namespace, which requires
+	// the informer cache to be running — it cannot execute before mgr.Start().
+	// On failure the Runnable calls os.Exit(1); returning nil allows the manager
+	// to continue. guardian-schema.md §4, INV-020.
+	if err := mgr.Add(&bootstrapLabelRunnable{kube: mgr.GetClient()}); err != nil {
+		setupLog.Error(err, "unable to register bootstrap label runnable")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
@@ -203,6 +203,33 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// bootstrapLabelRunnable verifies that the seam-system namespace carries the
+// seam.ontai.dev/webhook-mode=exempt label after the informer cache is running.
+// Registered via mgr.Add for both roles — the admission webhook requires this
+// label regardless of role. CheckBootstrapLabels reads a Kubernetes object, so
+// it cannot run before mgr.Start(). On failure, Start logs the error and calls
+// os.Exit(1); the manager is shut down.
+// guardian-schema.md §4, INV-020, CS-INV-004.
+type bootstrapLabelRunnable struct {
+	kube client.Client
+}
+
+func (r *bootstrapLabelRunnable) Start(ctx context.Context) error {
+	if err := webhook.CheckBootstrapLabels(ctx, r.kube); err != nil {
+		ctrl.Log.WithName("setup").Error(err,
+			"bootstrap label check failed; refusing to continue",
+			"label", webhook.WebhookModeLabelKey,
+			"expected", string(webhook.NamespaceModeExempt),
+		)
+		os.Exit(1)
+	}
+	ctrl.Log.WithName("setup").Info("bootstrap label check passed",
+		"namespace", "seam-system",
+		"label", webhook.WebhookModeLabelKey,
+	)
+	return nil
 }
 
 // cnpgStartupRunnable initialises the CNPG connection after the controller-runtime
