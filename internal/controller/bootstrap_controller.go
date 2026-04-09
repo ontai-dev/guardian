@@ -8,11 +8,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/webhook"
@@ -86,8 +88,24 @@ func (r *BootstrapController) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// startupSource enqueues one reconcile request for the Guardian singleton
+	// when the controller starts (after the cache is synced). This guarantees
+	// the Guardian CR is created and enforcement state is evaluated on startup,
+	// independent of whether any RBACProfile events arrive.
+	//
+	// source.Func.Start is called by controller-runtime exactly once, after the
+	// informer cache is ready and the controller goroutine begins.
+	startupSource := source.Func(func(_ context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request]) error {
+		q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: r.OperatorNamespace,
+			Name:      GuardianSingletonName,
+		}})
+		return nil
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Watches(&securityv1alpha1.RBACProfile{}, singletonKey).
+		WatchesRawSource(startupSource).
 		Named("bootstrap").
 		Complete(r)
 }
