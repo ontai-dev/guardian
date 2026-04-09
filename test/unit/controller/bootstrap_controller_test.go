@@ -14,8 +14,10 @@ package controller_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -253,21 +255,26 @@ func TestBootstrapController_ObserveOnlyTransitionIsOneWay(t *testing.T) {
 		t.Fatalf("precondition: gate should be ObserveOnly after first reconcile")
 	}
 
-	// Simulate profile becoming unprovisioned.
+	// Simulate profile becoming unprovisioned. Use Status().Update so the fake
+	// client (WithStatusSubresource) actually persists the status change. A plain
+	// Update() with WithStatusSubresource strips the status field silently.
 	p1.Status.Provisioned = false
-	if err := r.Client.Update(context.Background(), p1); err != nil {
-		t.Fatalf("update profile: %v", err)
+	if err := r.Client.Status().Update(context.Background(), p1); err != nil {
+		t.Fatalf("status update profile: %v", err)
 	}
 
 	// Second reconcile: mode must not revert to Initialising.
+	// It may advance to Enforcing in WS2 if all RBAC is annotated — but it must
+	// never revert backward. The one-way ratchet invariant is: mode only moves forward.
 	reconcileBootstrap(t, r, p1.Name, p1.Namespace)
 
 	gdn := getGuardian(t, r)
-	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeObserveOnly {
-		t.Errorf("WebhookMode = %q after revert, want ObserveOnly (one-way ratchet)", gdn.Status.WebhookMode)
+	if gdn.Status.WebhookMode == securityv1alpha1.WebhookModeInitialising {
+		t.Errorf("WebhookMode = %q after revert, mode must never revert to Initialising (one-way ratchet)",
+			gdn.Status.WebhookMode)
 	}
-	if gate.Mode() != securityv1alpha1.WebhookModeObserveOnly {
-		t.Errorf("gate = %q after revert, want ObserveOnly", gate.Mode())
+	if gate.Mode() == securityv1alpha1.WebhookModeInitialising {
+		t.Errorf("gate = %q after revert, gate must never revert to Initialising", gate.Mode())
 	}
 }
 
@@ -326,23 +333,180 @@ func TestGuardedResolver_ObserveOnlyGate_NamespaceNotInRegistry_Observe(t *testi
 	}
 }
 
-// Test 12 — GuardedNamespaceModeResolver: ObserveOnly gate + namespace in registry → base mode.
-// After the namespace is promoted by BootstrapController (registry.SetActive), the resolver
-// returns the base mode — which for a labelled enforce namespace is Enforce. INV-020.
-func TestGuardedResolver_ObserveOnlyGate_NamespaceInRegistry_ReturnsBaseMode(t *testing.T) {
+// Test 12 — GuardedNamespaceModeResolver: ObserveOnly gate + namespace Active but not
+// Enforcing → Observe. SetActive alone is no longer sufficient to enable deny posture.
+// The namespace must reach the Enforcing tier (SetEnforcing) before the resolver
+// returns Enforce mode. Active-but-not-Enforcing namespaces always observe. WS2.
+func TestGuardedResolver_ObserveOnlyGate_NamespaceActiveNotEnforcing_Observe(t *testing.T) {
 	gate := webhook.NewWebhookModeGate()
 	gate.SetMode(securityv1alpha1.WebhookModeObserveOnly)
 	registry := webhook.NewNamespaceEnforcementRegistry()
-	registry.SetActive("promoted-ns")
+	registry.SetActive("active-only-ns") // Active but NOT Enforcing
 	base := &webhook.StaticNamespaceModeResolver{
 		Modes: map[string]webhook.NamespaceMode{
-			"promoted-ns": webhook.NamespaceModeEnforce,
+			"active-only-ns": webhook.NamespaceModeEnforce,
 		},
 	}
 	resolver := webhook.NewGuardedNamespaceModeResolver(base, gate, registry)
 
-	got := resolver.ResolveMode(context.Background(), "promoted-ns")
+	got := resolver.ResolveMode(context.Background(), "active-only-ns")
+	if got != webhook.NamespaceModeObserve {
+		t.Errorf("ObserveOnly + Active but not Enforcing: got %q, want Observe", got)
+	}
+}
+
+// Test 12b — GuardedNamespaceModeResolver: ObserveOnly gate + namespace Enforcing → base mode.
+// Only after SetEnforcing does the resolver return the base mode (Enforce for unlabelled
+// namespaces). This is the two-tier promotion: Active (profiles ready) then Enforcing
+// (profiles ready + all RBAC annotated). WS2.
+func TestGuardedResolver_ObserveOnlyGate_NamespaceEnforcing_ReturnsBaseMode(t *testing.T) {
+	gate := webhook.NewWebhookModeGate()
+	gate.SetMode(securityv1alpha1.WebhookModeObserveOnly)
+	registry := webhook.NewNamespaceEnforcementRegistry()
+	registry.SetActive("enforcing-ns")
+	registry.SetEnforcing("enforcing-ns")
+	base := &webhook.StaticNamespaceModeResolver{
+		Modes: map[string]webhook.NamespaceMode{
+			"enforcing-ns": webhook.NamespaceModeEnforce,
+		},
+	}
+	resolver := webhook.NewGuardedNamespaceModeResolver(base, gate, registry)
+
+	got := resolver.ResolveMode(context.Background(), "enforcing-ns")
 	if got != webhook.NamespaceModeEnforce {
-		t.Errorf("ObserveOnly + in registry: got %q, want Enforce", got)
+		t.Errorf("ObserveOnly + Enforcing: got %q, want Enforce", got)
+	}
+}
+
+// --- WS2: Enforcing mode advancement ---
+
+// buildAnnotatedProfile creates a provisioned RBACProfile in the given namespace.
+// Used alongside annotated RBAC resources to test Enforcing advancement.
+func buildAnnotatedProfile(name, ns string) *securityv1alpha1.RBACProfile {
+	return buildProvisionedProfile(name, ns)
+}
+
+// makeAnnotatedRoleResource creates a Role pre-stamped with ontai.dev/rbac-owner=guardian.
+func makeAnnotatedRoleResource(name, ns string) *rbacv1.Role {
+	return &rbacv1.Role{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: map[string]string{webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue}},
+	}
+}
+
+// makeUnannotatedRoleResource creates a Role without the ownership annotation.
+func makeUnannotatedRoleResource(name, ns string) *rbacv1.Role {
+	return &rbacv1.Role{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+}
+
+// buildReconcilerForEnforcing builds a BootstrapController with a pre-completed sweep
+// (SweepDone=true) to allow testing Enforcing readiness logic.
+func buildReconcilerForEnforcing(t *testing.T, objs ...runtime.Object) *controller.BootstrapController {
+	t.Helper()
+	done := &atomic.Bool{}
+	done.Store(true)
+	return buildBootstrapReconcilerWithSweep(t, done, objs...)
+}
+
+// reconcileBootstrapN calls Reconcile N times and asserts no error on each.
+func reconcileBootstrapN(t *testing.T, r *controller.BootstrapController, n int, name, ns string) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: name, Namespace: ns},
+		}); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+}
+
+// Test 13 — Enforcing advance fires when all namespaces and cluster-scoped resources ready.
+// When all RBACProfiles are provisioned AND all RBAC resources carry the ownership
+// annotation, BootstrapController advances WebhookMode from ObserveOnly to Enforcing
+// and advances the in-memory gate. WS2. INV-020.
+func TestBootstrapController_EnforcingAdvancesWhenAllNamespacesReady(t *testing.T) {
+	// A provisioned profile in seam-system, and an annotated Role there.
+	profile := buildAnnotatedProfile("guardian-profile", "seam-system")
+	role := makeAnnotatedRoleResource("some-role", "seam-system")
+
+	r := buildReconcilerForEnforcing(t, profile, role)
+
+	// First reconcile: ObserveOnly advance (profiles ready, sweep done).
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+
+	gdn := getGuardian(t, r)
+	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeObserveOnly {
+		t.Fatalf("precondition: expected ObserveOnly after first reconcile, got %q", gdn.Status.WebhookMode)
+	}
+
+	// Second reconcile: Enforcing advance (all resources annotated, no ClusterRoles/CRBs).
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+
+	gdn = getGuardian(t, r)
+	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {
+		t.Errorf("WebhookMode = %q, want Enforcing when all namespaces ready", gdn.Status.WebhookMode)
+	}
+	if r.Gate.Mode() != securityv1alpha1.WebhookModeEnforcing {
+		t.Errorf("gate = %q, want Enforcing", r.Gate.Mode())
+	}
+	if !r.Registry.IsEnforcing("seam-system") {
+		t.Error("expected seam-system IsEnforcing=true after Enforcing advance")
+	}
+}
+
+// Test 14 — Enforcing advance blocked when unannotated RBAC resource exists.
+// Even with all profiles provisioned, if any RBAC resource in any namespace is
+// missing ontai.dev/rbac-owner=guardian, the global Enforcing advance must not fire.
+func TestBootstrapController_EnforcingBlockedWhenUnannotatedResourceExists(t *testing.T) {
+	profile := buildAnnotatedProfile("guardian-profile", "seam-system")
+	unannotated := makeUnannotatedRoleResource("legacy-role", "seam-system")
+
+	r := buildReconcilerForEnforcing(t, profile, unannotated)
+
+	// Two reconciles: first ObserveOnly, second evaluates enforcing.
+	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+
+	gdn := getGuardian(t, r)
+	if gdn.Status.WebhookMode == securityv1alpha1.WebhookModeEnforcing {
+		t.Error("WebhookMode must not advance to Enforcing when unannotated resources exist")
+	}
+	if r.Gate.Mode() == securityv1alpha1.WebhookModeEnforcing {
+		t.Error("gate must not advance to Enforcing when unannotated resources exist")
+	}
+	if r.Registry.IsEnforcing("seam-system") {
+		t.Error("seam-system must not be Enforcing when unannotated resources exist")
+	}
+}
+
+// Test 15 — Enforcing transition is one-way.
+// Once global mode reaches Enforcing, BootstrapController must not revert it even if
+// the profile count changes. INV-020.
+func TestBootstrapController_EnforcingTransitionIsOneWay(t *testing.T) {
+	profile := buildAnnotatedProfile("guardian-profile", "seam-system")
+	role := makeAnnotatedRoleResource("some-role", "seam-system")
+
+	r := buildReconcilerForEnforcing(t, profile, role)
+
+	// Advance to Enforcing.
+	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+
+	gdn := getGuardian(t, r)
+	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {
+		t.Fatalf("precondition: expected Enforcing, got %q", gdn.Status.WebhookMode)
+	}
+
+	// Simulate profile becoming unprovisioned — mode must not revert.
+	profile.Status.Provisioned = false
+	if err := r.Client.Status().Update(context.Background(), profile); err != nil {
+		t.Fatalf("status update profile: %v", err)
+	}
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+
+	gdn = getGuardian(t, r)
+	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {
+		t.Errorf("WebhookMode = %q after regression, want Enforcing (one-way ratchet)", gdn.Status.WebhookMode)
 	}
 }

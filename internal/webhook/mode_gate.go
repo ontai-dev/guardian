@@ -40,26 +40,36 @@ func (g *WebhookModeGate) SetMode(m securityv1alpha1.WebhookMode) {
 	g.mode.Store(m)
 }
 
-// NamespaceEnforcementRegistry records which namespaces have transitioned to full
-// RBAC enforcement. Entries are written by BootstrapController and read by
-// GuardedNamespaceModeResolver on each admission request.
+// NamespaceEnforcementRegistry records namespace enforcement progression.
 //
-// All methods are safe for concurrent use. Entries are never deleted — the
-// enforcement transition is one-way and irreversible.
+// There are two tiers of per-namespace promotion, each one-way and irreversible:
+//
+//  1. Active — all RBACProfiles in the namespace are Provisioned=True.
+//     Set by BootstrapController when ObserveOnly readiness is reached.
+//     Used as a prerequisite gate for Enforcing promotion.
+//
+//  2. Enforcing — all RBACProfiles are provisioned AND all RBAC resources in
+//     the namespace carry ontai.dev/rbac-owner=guardian.
+//     Set by BootstrapController when the per-namespace Enforcing check passes.
+//     The webhook handler uses IsEnforcing to decide whether to reject or observe.
+//
+// All methods are safe for concurrent use. Entries are never deleted.
 type NamespaceEnforcementRegistry struct {
-	mu     sync.RWMutex
-	active map[string]struct{}
+	mu        sync.RWMutex
+	active    map[string]struct{}
+	enforcing map[string]struct{}
 }
 
 // NewNamespaceEnforcementRegistry returns an empty registry with no active enforcements.
 func NewNamespaceEnforcementRegistry() *NamespaceEnforcementRegistry {
 	return &NamespaceEnforcementRegistry{
-		active: make(map[string]struct{}),
+		active:    make(map[string]struct{}),
+		enforcing: make(map[string]struct{}),
 	}
 }
 
-// IsActive reports whether namespace ns has been promoted to full enforcement.
-// Safe for concurrent use.
+// IsActive reports whether namespace ns has reached the Active tier
+// (all RBACProfiles provisioned). Safe for concurrent use.
 func (r *NamespaceEnforcementRegistry) IsActive(ns string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -67,10 +77,30 @@ func (r *NamespaceEnforcementRegistry) IsActive(ns string) bool {
 	return ok
 }
 
-// SetActive marks namespace ns as promoted to full enforcement. Idempotent.
+// SetActive marks namespace ns as Active (all RBACProfiles provisioned). Idempotent.
 // Safe for concurrent use. The promotion is permanent — there is no RemoveActive.
 func (r *NamespaceEnforcementRegistry) SetActive(ns string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.active[ns] = struct{}{}
+}
+
+// IsEnforcing reports whether namespace ns has reached the Enforcing tier
+// (all RBACProfiles provisioned AND all RBAC resources annotated with
+// ontai.dev/rbac-owner=guardian). The webhook handler uses this to decide
+// whether to reject (enforcing) or observe (not yet enforcing). Safe for concurrent use.
+func (r *NamespaceEnforcementRegistry) IsEnforcing(ns string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.enforcing[ns]
+	return ok
+}
+
+// SetEnforcing marks namespace ns as Enforcing (all RBACProfiles provisioned AND
+// all RBAC resources annotated). Idempotent. Safe for concurrent use.
+// The promotion is permanent — there is no RemoveEnforcing. INV-020.
+func (r *NamespaceEnforcementRegistry) SetEnforcing(ns string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.enforcing[ns] = struct{}{}
 }

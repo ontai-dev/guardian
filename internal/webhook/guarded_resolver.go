@@ -15,16 +15,19 @@ import (
 //     immediately — exempt namespaces are never overridden by the global gate.
 //  2. If global mode is Initialising: return Observe — no denials while guardian
 //     is bootstrapping. The bootstrap window is still open. INV-020.
-//  3. If global mode is ObserveOnly or Enforcing: check the per-namespace registry.
-//     If the namespace is active in the registry: return the base resolver's mode
-//     (which at this point is Enforce or Observe from namespace labels).
-//     If the namespace is not yet in the registry: return Observe.
+//  3. If global mode is ObserveOnly or Enforcing: check the per-namespace enforcing
+//     registry (IsEnforcing). If the namespace has been promoted to Enforcing:
+//     return the base resolver's mode (Enforce for unlabelled namespaces → actual
+//     denials are issued). If the namespace is Active but not yet Enforcing, or not
+//     yet Active at all: return Observe (log would-deny, admit unconditionally).
 //
 // This ensures:
 //   - Exempt namespaces (seam-system, kube-system) are always exempt.
 //   - During bootstrap (Initialising): all non-exempt namespaces observe.
-//   - After ObserveOnly: namespaces promoted by BootstrapController enforce;
-//     namespaces not yet promoted continue to observe.
+//   - After ObserveOnly: namespaces promoted to Enforcing by BootstrapController
+//     apply full deny posture; all other namespaces continue to observe.
+//   - The Enforcing tier requires both profile provisioning (Active) AND full
+//     RBAC annotation coverage (Enforcing), preventing premature denials.
 type GuardedNamespaceModeResolver struct {
 	base     NamespaceModeResolver
 	gate     *WebhookModeGate
@@ -64,10 +67,14 @@ func (r *GuardedNamespaceModeResolver) ResolveMode(ctx context.Context, namespac
 		return NamespaceModeObserve
 	}
 
-	// Gate 3: ObserveOnly or Enforcing global state — check per-namespace registry.
-	// Namespaces promoted by BootstrapController return their base mode (Enforce or
-	// Observe from label). Namespaces not yet promoted default to Observe.
-	if r.registry.IsActive(namespace) {
+	// Gate 3: ObserveOnly or Enforcing global state — check the per-namespace enforcing
+	// registry. Only namespaces that have been explicitly promoted to the Enforcing tier
+	// by BootstrapController apply the base resolver's mode (deny posture for unlabelled
+	// namespaces). All other namespaces — including those that are Active (profiles
+	// provisioned) but not yet Enforcing (RBAC annotation coverage incomplete) — return
+	// Observe. This ensures premature denials never fire before the annotation sweep
+	// and enforcing readiness check have both confirmed the namespace is clean.
+	if r.registry.IsEnforcing(namespace) {
 		return baseMode
 	}
 	return NamespaceModeObserve
