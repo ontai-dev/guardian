@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 
+	_ "github.com/lib/pq" // registers "postgres" driver for database/sql
+
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
