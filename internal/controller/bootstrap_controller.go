@@ -10,7 +10,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/webhook"
@@ -63,9 +65,29 @@ type BootstrapController struct {
 // SetupWithManager registers BootstrapController with the manager.
 // It watches RBACProfile CRs across all namespaces so that any provisioning
 // transition triggers re-evaluation of the global and per-namespace gates.
+//
+// Watches() is used instead of For() to decouple this controller's informer
+// registration from RBACProfileReconciler's For(RBACProfile) registration.
+// In controller-runtime v0.23.3, two controllers sharing the same GVK informer
+// via For() may not both receive events reliably after cache sync.
+//
+// All RBACProfile events are mapped to a fixed reconcile request for the
+// Guardian singleton — BootstrapController reconciles global state, not
+// individual RBACProfile objects.
 func (r *BootstrapController) SetupWithManager(mgr ctrl.Manager) error {
+	singletonKey := handler.EnqueueRequestsFromMapFunc(
+		func(_ context.Context, _ client.Object) []reconcile.Request {
+			return []reconcile.Request{
+				{NamespacedName: types.NamespacedName{
+					Namespace: r.OperatorNamespace,
+					Name:      GuardianSingletonName,
+				}},
+			}
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&securityv1alpha1.RBACProfile{}).
+		Watches(&securityv1alpha1.RBACProfile{}, singletonKey).
 		Named("bootstrap").
 		Complete(r)
 }
