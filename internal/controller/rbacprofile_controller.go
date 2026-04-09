@@ -344,5 +344,6 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.RBACProfile{}).
+		Named("rbacprofile").
 		Complete(r)
 }
