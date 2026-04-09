@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	_ "github.com/lib/pq" // registers "postgres" driver for database/sql
 
@@ -170,6 +171,11 @@ func main() {
 	modeGate := webhook.NewWebhookModeGate()
 	enforcementRegistry := webhook.NewNamespaceEnforcementRegistry()
 
+	// sweepDone is shared between BootstrapAnnotationRunnable (writer) and
+	// BootstrapController (reader). The sweep must complete before BootstrapController
+	// is permitted to advance WebhookMode to ObserveOnly. guardian-schema.md §4.
+	sweepDone := &atomic.Bool{}
+
 	if err := (&controller.BootstrapController{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
@@ -177,6 +183,7 @@ func main() {
 		Gate:              modeGate,
 		Registry:          enforcementRegistry,
 		OperatorNamespace: operatorNamespace,
+		SweepDone:         sweepDone,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Bootstrap")
 		os.Exit(1)
@@ -199,6 +206,19 @@ func main() {
 	// to continue. guardian-schema.md §4, INV-020.
 	if err := mgr.Add(&bootstrapLabelRunnable{kube: mgr.GetClient()}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap label runnable")
+		os.Exit(1)
+	}
+
+	// Register the bootstrap annotation sweep as a post-cache Runnable. Runs for
+	// both roles. Scans all pre-existing RBAC resources and stamps the ownership
+	// annotation on any resource missing ontai.dev/rbac-owner=guardian. Signals
+	// completion via sweepDone, unblocking BootstrapController from advancing
+	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
+	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
+		Client:    mgr.GetClient(),
+		SweepDone: sweepDone,
+	}); err != nil {
+		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)
 	}
 

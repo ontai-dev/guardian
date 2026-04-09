@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"sync/atomic"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,6 +64,12 @@ type BootstrapController struct {
 	// OperatorNamespace is the namespace where the Guardian singleton CR lives and
 	// where the operator itself runs. Populated from OPERATOR_NAMESPACE env var.
 	OperatorNamespace string
+
+	// SweepDone is set to true by BootstrapAnnotationRunnable when the pre-existing
+	// RBAC annotation sweep has completed. BootstrapController blocks the
+	// Initialising → ObserveOnly transition until this flag is true.
+	// guardian-schema.md §4, INV-020.
+	SweepDone *atomic.Bool
 }
 
 // SetupWithManager registers BootstrapController with the manager.
@@ -173,6 +181,19 @@ func (r *BootstrapController) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Advance global WebhookMode from Initialising to ObserveOnly when ready.
 	// This transition is one-way: do not revert ObserveOnly or Enforcing.
+	//
+	// Gate: the annotation sweep (BootstrapAnnotationRunnable) must complete before
+	// the mode is advanced. Without a clean annotation baseline, advancing to
+	// ObserveOnly may begin per-namespace enforce transitions against unannotated
+	// pre-existing resources. guardian-schema.md §4. INV-020.
+	if globalReady && gdn.Status.WebhookMode == securityv1alpha1.WebhookModeInitialising &&
+		r.SweepDone != nil && !r.SweepDone.Load() {
+		logger.Info("annotation sweep not yet complete; requeuing before ObserveOnly advance",
+			"requeueAfter", "5s",
+		)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
 	if globalReady && gdn.Status.WebhookMode == securityv1alpha1.WebhookModeInitialising {
 		gdn.Status.WebhookMode = securityv1alpha1.WebhookModeObserveOnly
 		securityv1alpha1.SetCondition(
