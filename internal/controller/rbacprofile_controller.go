@@ -348,7 +348,12 @@ var rbacProfilePredicate = predicate.Funcs{
 	CreateFunc: func(_ event.CreateEvent) bool { return true },
 	DeleteFunc: func(_ event.DeleteEvent) bool { return true },
 	UpdateFunc: func(e event.UpdateEvent) bool {
-		return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
+		// Also return true when ObjectOld has generation 0 — this covers the
+		// informer startup case where synthetic update events are delivered with
+		// a zero-value old object. Normal status-update suppression is preserved
+		// for cases where both old and new carry non-zero equal generations.
+		return e.ObjectOld.GetGeneration() == 0 ||
+			e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
 	},
 	GenericFunc: func(_ event.GenericEvent) bool { return true },
 }
