@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -334,14 +335,28 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager registers RBACProfileReconciler as the controller for RBACProfile.
+// rbacProfilePredicate is the event filter for RBACProfileReconciler.
 //
-// GenerationChangedPredicate prevents reconciliation when only the status
-// subresource is updated, breaking the reconcile loop that would otherwise
-// be triggered by the reconciler's own status patches.
+// GenerationChangedPredicate is not used here because in controller-runtime
+// v0.23.3 its Create() method may return false, suppressing create events and
+// leaving newly created RBACProfile objects unreconciled.
+//
+// This predicate explicitly returns true for Create and Delete events and
+// returns true for Update events only when metadata.generation has changed,
+// preserving the intent of avoiding reconcile loops from status-only updates.
+var rbacProfilePredicate = predicate.Funcs{
+	CreateFunc: func(_ event.CreateEvent) bool { return true },
+	DeleteFunc: func(_ event.DeleteEvent) bool { return true },
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
+	},
+	GenericFunc: func(_ event.GenericEvent) bool { return true },
+}
+
+// SetupWithManager registers RBACProfileReconciler as the controller for RBACProfile.
 func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.RBACProfile{}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
+		WithEventFilter(rbacProfilePredicate).
 		Complete(r)
 }
