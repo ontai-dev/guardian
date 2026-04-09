@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -84,29 +85,31 @@ func (s *SQLAuditStore) InsertEvent(ctx context.Context, event AuditEvent) error
 	return nil
 }
 
-// SecretFields are the field names that CNPG provisioned Secrets contain.
-// The Secret is read by internal/database/secret.go via the Kubernetes client.
-const (
-	SecretFieldHost     = "host"
-	SecretFieldPort     = "port"
-	SecretFieldDBName   = "dbname"
-	SecretFieldUser     = "user"
-	SecretFieldPassword = "password"
-)
+// SecretFieldURI is the field name in the CNPG-provisioned app Secret that
+// contains the full PostgreSQL connection URI. CNPG generates this field with
+// all correct parameters. guardian-schema.md §16.
+const SecretFieldURI = "uri"
 
-// ConnConfig holds the CNPG connection parameters resolved from the Secret.
+// ConnConfig holds the CNPG connection URI resolved from the app Secret.
 type ConnConfig struct {
-	Host     string
-	Port     string
-	DBName   string
-	User     string
-	Password string
+	// URI is the full PostgreSQL connection URI from the CNPG app Secret uri field,
+	// e.g. "postgresql://user:password@host:port/dbname".
+	URI string
 }
 
-// DSN returns a PostgreSQL connection string for this configuration.
+// DSN returns the connection URI with sslmode=require appended as a query
+// parameter if no sslmode is already present. CNPG pg_hba requires hostssl;
+// using sslmode=disable causes "pg_hba.conf rejects connection, no encryption".
 func (c ConnConfig) DSN() string {
-	return fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=disable",
-		c.Host, c.Port, c.DBName, c.User, c.Password)
+	uri := c.URI
+	if !strings.Contains(uri, "sslmode=") {
+		if strings.Contains(uri, "?") {
+			uri += "&sslmode=require"
+		} else {
+			uri += "?sslmode=require"
+		}
+	}
+	return uri
 }
 
 // DB is the interface that wraps the minimal database operations used by Guardian.

@@ -34,40 +34,9 @@ func ConnConfigFromSecret(ctx context.Context, kube client.Client) (ConnConfig, 
 		return ConnConfig{}, fmt.Errorf("get CNPG secret %s/%s: %w", namespace, name, err)
 	}
 
-	get := func(field string) (string, error) {
-		val, ok := secret.Data[field]
-		if !ok || len(val) == 0 {
-			return "", fmt.Errorf("CNPG secret %s/%s missing field %q", namespace, name, field)
-		}
-		return string(val), nil
+	uri, ok := secret.Data[SecretFieldURI]
+	if !ok || len(uri) == 0 {
+		return ConnConfig{}, fmt.Errorf("CNPG secret %s/%s missing field %q", namespace, name, SecretFieldURI)
 	}
-
-	host, err := get(SecretFieldHost)
-	if err != nil {
-		return ConnConfig{}, err
-	}
-	port, err := get(SecretFieldPort)
-	if err != nil {
-		return ConnConfig{}, err
-	}
-	dbname, err := get(SecretFieldDBName)
-	if err != nil {
-		return ConnConfig{}, err
-	}
-	user, err := get(SecretFieldUser)
-	if err != nil {
-		return ConnConfig{}, err
-	}
-	password, err := get(SecretFieldPassword)
-	if err != nil {
-		return ConnConfig{}, err
-	}
-
-	return ConnConfig{
-		Host:     host,
-		Port:     port,
-		DBName:   dbname,
-		User:     user,
-		Password: password,
-	}, nil
+	return ConnConfig{URI: string(uri)}, nil
 }

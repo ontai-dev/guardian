@@ -532,18 +532,37 @@ func TestMigrationRunner_HaltsOnFailureBeforeNextMigration(t *testing.T) {
 	}
 }
 
-// TestConnConfig_DSN verifies the DSN format.
+// TestConnConfig_DSN verifies that DSN appends sslmode=require when absent and
+// leaves an existing sslmode parameter untouched.
 func TestConnConfig_DSN(t *testing.T) {
-	cfg := database.ConnConfig{
-		Host:     "cnpg-rw.seam-system.svc",
-		Port:     "5432",
-		DBName:   "guardian",
-		User:     "guardian",
-		Password: "secret",
+	tests := []struct {
+		name     string
+		uri      string
+		expected string
+	}{
+		{
+			name:     "no sslmode — appends sslmode=require",
+			uri:      "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian",
+			expected: "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=require",
+		},
+		{
+			name:     "existing query param — appends &sslmode=require",
+			uri:      "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?connect_timeout=10",
+			expected: "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?connect_timeout=10&sslmode=require",
+		},
+		{
+			name:     "sslmode already present — left unchanged",
+			uri:      "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=verify-full",
+			expected: "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=verify-full",
+		},
 	}
-	dsn := cfg.DSN()
-	expected := "host=cnpg-rw.seam-system.svc port=5432 dbname=guardian user=guardian password=secret sslmode=disable"
-	if dsn != expected {
-		t.Errorf("DSN mismatch\ngot:  %s\nwant: %s", dsn, expected)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := database.ConnConfig{URI: tc.uri}
+			dsn := cfg.DSN()
+			if dsn != tc.expected {
+				t.Errorf("DSN mismatch\ngot:  %s\nwant: %s", dsn, tc.expected)
+			}
+		})
 	}
 }
