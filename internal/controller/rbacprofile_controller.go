@@ -13,9 +13,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
@@ -73,6 +71,13 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get RBACProfile %s: %w", req.NamespacedName, err)
+	}
+
+	// ObservedGeneration guard — skip if this generation was already processed.
+	// Prevents reconcile loops from the reconciler's own status patches (which
+	// change ResourceVersion but not Generation) and from informer resync events.
+	if profile.Status.ObservedGeneration == profile.Generation {
+		return ctrl.Result{}, nil
 	}
 
 	// Step B — Set up deferred status patch.
@@ -335,44 +340,9 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-// rbacProfilePredicate is the event filter for RBACProfileReconciler.
-//
-// GenerationChangedPredicate is not used here because in controller-runtime
-// v0.23.3 its Create() method may return false, suppressing create events and
-// leaving newly created RBACProfile objects unreconciled.
-//
-// This predicate explicitly returns true for Create and Delete events and
-// returns true for Update events only when metadata.generation has changed,
-// preserving the intent of avoiding reconcile loops from status-only updates.
-var rbacProfilePredicate = predicate.Funcs{
-	CreateFunc: func(_ event.CreateEvent) bool { return true },
-	DeleteFunc: func(_ event.DeleteEvent) bool { return true },
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		// Informer resync delivers the same cached object for both old and new,
-		// so both carry identical ResourceVersions. Let these through so existing
-		// profiles are reconciled on each informer resync cycle and on guardian
-		// startup — the reconcile loop is bounded because the reconciler's own
-		// status patches produce events with different ResourceVersions.
-		if e.ObjectOld.GetResourceVersion() == e.ObjectNew.GetResourceVersion() {
-			return true
-		}
-		// Initial list handoff: old is a zero-value with generation 0.
-		if e.ObjectOld.GetGeneration() == 0 {
-			return true
-		}
-		// Spec change: API server increments generation on spec writes.
-		// Status-only and metadata-only updates (same gen, different rv) are
-		// suppressed to prevent the reconciler from re-triggering on its own
-		// status patches or annotation signals.
-		return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
-	},
-	GenericFunc: func(_ event.GenericEvent) bool { return true },
-}
-
 // SetupWithManager registers RBACProfileReconciler as the controller for RBACProfile.
 func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.RBACProfile{}).
-		WithEventFilter(rbacProfilePredicate).
 		Complete(r)
 }
