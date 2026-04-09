@@ -54,6 +54,10 @@ type BootstrapController struct {
 	// Registry is the in-memory per-namespace enforcement registry shared with the
 	// webhook handler via GuardedNamespaceModeResolver.
 	Registry *webhook.NamespaceEnforcementRegistry
+
+	// OperatorNamespace is the namespace where the Guardian singleton CR lives and
+	// where the operator itself runs. Populated from OPERATOR_NAMESPACE env var.
+	OperatorNamespace string
 }
 
 // SetupWithManager registers BootstrapController with the manager.
@@ -76,7 +80,7 @@ func (r *BootstrapController) Reconcile(ctx context.Context, req ctrl.Request) (
 	gdn := &securityv1alpha1.Guardian{}
 	err := r.Client.Get(ctx, types.NamespacedName{
 		Name:      GuardianSingletonName,
-		Namespace: GuardianSingletonNamespace,
+		Namespace: r.OperatorNamespace,
 	}, gdn)
 	if apierrors.IsNotFound(err) {
 		gdn = r.newGuardianSingleton()
@@ -87,7 +91,7 @@ func (r *BootstrapController) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Refetch after create.
 		if getErr := r.Client.Get(ctx, types.NamespacedName{
 			Name:      GuardianSingletonName,
-			Namespace: GuardianSingletonNamespace,
+			Namespace: r.OperatorNamespace,
 		}, gdn); getErr != nil {
 			return ctrl.Result{}, getErr
 		}
@@ -179,7 +183,7 @@ func (r *BootstrapController) newGuardianSingleton() *securityv1alpha1.Guardian 
 	gdn := &securityv1alpha1.Guardian{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      GuardianSingletonName,
-			Namespace: GuardianSingletonNamespace,
+			Namespace: r.OperatorNamespace,
 		},
 	}
 	gdn.Status.WebhookMode = securityv1alpha1.WebhookModeInitialising

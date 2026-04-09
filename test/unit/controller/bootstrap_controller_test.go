@@ -51,11 +51,12 @@ func buildBootstrapReconciler(t *testing.T, objs ...runtime.Object) (
 	gate := webhook.NewWebhookModeGate()
 	registry := webhook.NewNamespaceEnforcementRegistry()
 	r := &controller.BootstrapController{
-		Client:   c,
-		Scheme:   s,
-		Recorder: record.NewFakeRecorder(32),
-		Gate:     gate,
-		Registry: registry,
+		Client:            c,
+		Scheme:            s,
+		Recorder:          record.NewFakeRecorder(32),
+		Gate:              gate,
+		Registry:          registry,
+		OperatorNamespace: controller.GuardianSingletonNamespace,
 	}
 	return r, gate, registry
 }

@@ -106,13 +106,13 @@ func TestEPGReconciler_PermissionSnapshotConformsToFormalSchema(t *testing.T) {
 		Build()
 
 	r := &controller.EPGReconciler{
-		Client:   cl,
-		Scheme:   s,
-		Recorder: record.NewFakeRecorder(16),
+		Client:            cl,
+		Scheme:            s,
+		Recorder:          record.NewFakeRecorder(16),
+		OperatorNamespace: ns,
 	}
 
 	// Trigger a full EPG recomputation via the "epg-trigger" fixed key.
-	// The namespace must be security-system (epgSnapshotNamespace).
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: "epg-trigger", Namespace: ns},
 	})

@@ -348,12 +348,23 @@ var rbacProfilePredicate = predicate.Funcs{
 	CreateFunc: func(_ event.CreateEvent) bool { return true },
 	DeleteFunc: func(_ event.DeleteEvent) bool { return true },
 	UpdateFunc: func(e event.UpdateEvent) bool {
-		// Also return true when ObjectOld has generation 0 — this covers the
-		// informer startup case where synthetic update events are delivered with
-		// a zero-value old object. Normal status-update suppression is preserved
-		// for cases where both old and new carry non-zero equal generations.
-		return e.ObjectOld.GetGeneration() == 0 ||
-			e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
+		// Informer resync delivers the same cached object for both old and new,
+		// so both carry identical ResourceVersions. Let these through so existing
+		// profiles are reconciled on each informer resync cycle and on guardian
+		// startup — the reconcile loop is bounded because the reconciler's own
+		// status patches produce events with different ResourceVersions.
+		if e.ObjectOld.GetResourceVersion() == e.ObjectNew.GetResourceVersion() {
+			return true
+		}
+		// Initial list handoff: old is a zero-value with generation 0.
+		if e.ObjectOld.GetGeneration() == 0 {
+			return true
+		}
+		// Spec change: API server increments generation on spec writes.
+		// Status-only and metadata-only updates (same gen, different rv) are
+		// suppressed to prevent the reconciler from re-triggering on its own
+		// status patches or annotation signals.
+		return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration()
 	},
 	GenericFunc: func(_ event.GenericEvent) bool { return true },
 }

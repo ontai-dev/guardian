@@ -27,9 +27,6 @@ import (
 )
 
 const (
-	// epgSnapshotNamespace is the namespace where PermissionSnapshot CRs are written.
-	epgSnapshotNamespace = "security-system"
-
 	// epgFieldOwner is the server-side apply field manager name for EPGReconciler.
 	epgFieldOwner = "guardian-epg"
 
@@ -77,6 +74,10 @@ type EPGReconciler struct {
 	// it is updated after each successful EPG computation so that
 	// PermissionService queries reflect the latest EPG. Nil is safe (no-op).
 	Store EPGStoreWriter
+
+	// OperatorNamespace is the namespace where PermissionSnapshot CRs are written
+	// and where the operator itself runs. Populated from OPERATOR_NAMESPACE env var.
+	OperatorNamespace string
 }
 
 // Reconcile is the main reconciliation loop for the EPGReconciler.
@@ -168,7 +169,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				logger.Info("EPGReconciler: PermissionSet not found — requeuing",
 					"permissionSet", key.name, "namespace", key.ns)
 				r.Recorder.Eventf(&securityv1alpha1.PermissionSnapshot{
-					ObjectMeta: metav1.ObjectMeta{Name: "epg-error", Namespace: epgSnapshotNamespace},
+					ObjectMeta: metav1.ObjectMeta{Name: "epg-error", Namespace: r.OperatorNamespace},
 				}, corev1.EventTypeWarning, "PermissionSetNotFound",
 					"EPGReconciler: PermissionSet %q not found; requeue in 15s", key.name)
 				return ctrl.Result{RequeueAfter: 15e9}, nil
@@ -216,7 +217,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Step I — Upsert PermissionSnapshot for each cluster.
 	// First, fetch existing snapshots to preserve existing names.
 	var existingSnapshots securityv1alpha1.PermissionSnapshotList
-	if err := r.Client.List(ctx, &existingSnapshots, client.InNamespace(epgSnapshotNamespace)); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Client.List(ctx, &existingSnapshots, client.InNamespace(r.OperatorNamespace)); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to list existing PermissionSnapshots: %w", err)
 	}
 	existingByCluster := make(map[string]string)
@@ -226,7 +227,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var upsertedSnapshots []*securityv1alpha1.PermissionSnapshot
 	for _, cluster := range result.TargetClusters {
-		snapshot := epg.BuildPermissionSnapshot(result, cluster, epgSnapshotNamespace, existingByCluster[cluster])
+		snapshot := epg.BuildPermissionSnapshot(result, cluster, r.OperatorNamespace, existingByCluster[cluster])
 
 		// Server-side apply to upsert the spec.
 		if err := r.Client.Patch(ctx, snapshot, client.Apply, client.ForceOwnership,
@@ -311,7 +312,7 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 	logger := log.FromContext(ctx)
 
 	var snapshotList securityv1alpha1.PermissionSnapshotList
-	if err := r.Client.List(ctx, &snapshotList, client.InNamespace(epgSnapshotNamespace)); err != nil {
+	if err := r.Client.List(ctx, &snapshotList, client.InNamespace(r.OperatorNamespace)); err != nil {
 		return fmt.Errorf("reconcileDrift: failed to list PermissionSnapshots: %w", err)
 	}
 
@@ -453,7 +454,7 @@ func (r *EPGReconciler) syntheticEventObj() *securityv1alpha1.PermissionSnapshot
 	return &securityv1alpha1.PermissionSnapshot{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "epg-controller",
-			Namespace: epgSnapshotNamespace,
+			Namespace: r.OperatorNamespace,
 		},
 	}
 }
@@ -498,7 +499,7 @@ func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		func(_ context.Context, _ client.Object) []reconcile.Request {
 			return []reconcile.Request{
 				{NamespacedName: types.NamespacedName{
-					Namespace: epgSnapshotNamespace,
+					Namespace: r.OperatorNamespace,
 					Name:      epgTriggerName,
 				}},
 			}
@@ -510,7 +511,7 @@ func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		func(_ context.Context, _ client.Object) []reconcile.Request {
 			return []reconcile.Request{
 				{NamespacedName: types.NamespacedName{
-					Namespace: epgSnapshotNamespace,
+					Namespace: r.OperatorNamespace,
 					Name:      epgDriftTriggerName,
 				}},
 			}

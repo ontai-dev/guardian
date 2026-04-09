@@ -54,6 +54,16 @@ func main() {
 	// guardian-schema.md §15.
 	guardianRole := role.ReadFromEnv()
 
+	// Read OPERATOR_NAMESPACE — the namespace where this operator runs and where
+	// namespace-scoped operator CRs (Guardian singleton, PermissionSnapshots) live.
+	// Absent value is a hard startup failure: all namespace-scoped writes would land
+	// in the wrong namespace without it.
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		fmt.Fprintln(os.Stderr, "OPERATOR_NAMESPACE must be set")
+		os.Exit(1)
+	}
+
 	var (
 		metricsAddr          string
 		healthProbeAddr      string
@@ -95,7 +105,7 @@ func main() {
 		HealthProbeBindAddress:  healthProbeAddr,
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "guardian-leader",
-		LeaderElectionNamespace: "seam-system",
+		LeaderElectionNamespace: operatorNamespace,
 		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
 			Port: webhookPort,
 		}),
@@ -126,7 +136,7 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, operatorNamespace); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -161,11 +171,12 @@ func main() {
 	enforcementRegistry := webhook.NewNamespaceEnforcementRegistry()
 
 	if err := (&controller.BootstrapController{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("bootstrap-controller"),
-		Gate:     modeGate,
-		Registry: enforcementRegistry,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("bootstrap-controller"),
+		Gate:              modeGate,
+		Registry:          enforcementRegistry,
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Bootstrap")
 		os.Exit(1)
@@ -317,10 +328,10 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string) error {
 	switch r {
 	case role.RoleManagement:
-		return setupManagementControllers(mgr, epgStore, auditDB)
+		return setupManagementControllers(mgr, epgStore, auditDB, operatorNamespace)
 	case role.RoleTenant:
 		return setupTenantControllers(mgr)
 	default:
@@ -331,7 +342,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string) error {
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -341,10 +352,11 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	}
 
 	if err := (&controller.EPGReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("epg-controller"),
-		Store:    epgStore,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("epg-controller"),
+		Store:             epgStore,
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
