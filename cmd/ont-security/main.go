@@ -16,13 +16,16 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -103,24 +106,15 @@ func main() {
 	// Create the in-memory EPG store shared between EPGReconciler and PermissionService.
 	epgStore := permissionservice.NewInMemoryEPGStore()
 
-	// For role=management: run the CNPG migration runner before controller registration.
-	// If CNPG is unreachable, this blocks in a degraded hold loop (30s retry) until
-	// CNPG becomes reachable. guardian-schema.md §3 Step 1, §16.
-	var auditDB database.DB
+	// For role=management: create the lazy database handle now. The real CNPG
+	// connection is established by cnpgStartupRunnable.Start after the
+	// controller-runtime informer cache is running. The AuditSinkReconciler
+	// holds this handle from construction time; it returns ErrDatabaseNotReady
+	// (causing a requeue) until cnpgStartupRunnable calls Set.
+	// guardian-schema.md §3 Step 1, §16.
+	var lazyAuditDB *database.LazyAuditDatabase
 	if guardianRole == role.RoleManagement {
-		cfg, err := database.ConnConfigFromSecret(ctrl.SetupSignalHandler(), mgr.GetClient())
-		if err != nil {
-			// CNPG_SECRET_NAME / CNPG_SECRET_NAMESPACE not set is a hard failure.
-			setupLog.Error(err, "cannot resolve CNPG connection config")
-			os.Exit(1)
-		}
-		db, err := database.RunWithRetry(ctrl.SetupSignalHandler(), cfg, mgr.GetClient())
-		if err != nil {
-			// ctx cancelled — clean shutdown.
-			setupLog.Error(err, "CNPG startup aborted")
-			os.Exit(1)
-		}
-		auditDB = db
+		lazyAuditDB = database.NewLazyAuditDatabase()
 	}
 
 	// Register controllers shared by both roles.
@@ -130,9 +124,23 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, auditDB); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
+	}
+
+	// For role=management: register the CNPG startup runnable. The manager calls
+	// Start after the informer cache is synced, so mgr.GetClient().Get() is
+	// guaranteed to work when ConnConfigFromSecret reads the CNPG Secret.
+	// guardian-schema.md §3 Step 1, §16.
+	if guardianRole == role.RoleManagement {
+		if err := mgr.Add(&cnpgStartupRunnable{
+			kube:   mgr.GetClient(),
+			lazyDB: lazyAuditDB,
+		}); err != nil {
+			setupLog.Error(err, "unable to register CNPG startup runnable")
+			os.Exit(1)
+		}
 	}
 
 	// Start the PermissionService gRPC server in the background.
@@ -197,6 +205,39 @@ func main() {
 	}
 }
 
+// cnpgStartupRunnable initialises the CNPG connection after the controller-runtime
+// informer cache has started. It is registered via mgr.Add so that Start is called
+// only once the cache is ready and mgr.GetClient() can serve reads.
+//
+// Start resolves the CNPG connection Secret (ConnConfigFromSecret), opens the
+// connection, runs schema migrations (RunWithRetry), and calls lazyDB.Set to make
+// AuditSinkReconciler operational. If CNPG is unreachable, RunWithRetry blocks in
+// a degraded hold loop (30s retry) per guardian-schema.md §3 Step 1. Returning a
+// non-nil error from Start causes the manager to shut down.
+//
+// guardian-schema.md §3 Step 1, §16.
+type cnpgStartupRunnable struct {
+	kube   client.Client
+	lazyDB *database.LazyAuditDatabase
+}
+
+func (r *cnpgStartupRunnable) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("cnpg-startup")
+	cfg, err := database.ConnConfigFromSecret(ctx, r.kube)
+	if err != nil {
+		// CNPG_SECRET_NAME / CNPG_SECRET_NAMESPACE not set is a hard failure.
+		return fmt.Errorf("cannot resolve CNPG connection config: %w", err)
+	}
+	db, err := database.RunWithRetry(ctx, cfg, r.kube)
+	if err != nil {
+		// ctx cancelled — clean shutdown.
+		return fmt.Errorf("CNPG startup aborted: %w", err)
+	}
+	r.lazyDB.Set(database.NewSQLAuditStore(db))
+	log.Info("CNPG connection established; AuditSinkReconciler operational")
+	return nil
+}
+
 // setupSharedControllers registers the controllers that run in both roles.
 // guardian-schema.md §15.
 func setupSharedControllers(mgr ctrl.Manager) error {
@@ -247,7 +288,7 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.DB) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase) error {
 	switch r {
 	case role.RoleManagement:
 		return setupManagementControllers(mgr, epgStore, auditDB)
@@ -261,7 +302,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.DB) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase) error {
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -279,17 +320,16 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 		return err
 	}
 
-	// AuditSinkReconciler: full implementation in WS3 session/41.
-	// Wrap the raw DB in an SQLAuditStore that implements database.AuditDatabase.
-	var auditStore database.AuditDatabase
-	if auditDB != nil {
-		auditStore = database.NewSQLAuditStore(auditDB)
-	}
+	// AuditSinkReconciler receives the LazyAuditDatabase constructed in main.
+	// The DB is always non-nil here (management role only). The cnpgStartupRunnable
+	// calls Set after the cache starts, making the DB operational. Until then,
+	// Reconcile returns ErrDatabaseNotReady and requeues audit batch ConfigMaps.
+	// guardian-schema.md §3 Step 1, §16.
 	if err := (&controller.AuditSinkReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("auditsink-controller"),
-		DB:       auditStore,
+		DB:       auditDB,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
