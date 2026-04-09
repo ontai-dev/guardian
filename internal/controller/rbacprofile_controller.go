@@ -73,10 +73,12 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("failed to get RBACProfile %s: %w", req.NamespacedName, err)
 	}
 
-	// ObservedGeneration guard — skip if this generation was already processed.
+	// ObservedGeneration guard — skip if this generation was already processed
+	// and the profile is provisioned. Pending or failed profiles must always be
+	// reprocessed regardless of generation match so that requeue cycles complete.
 	// Prevents reconcile loops from the reconciler's own status patches (which
 	// change ResourceVersion but not Generation) and from informer resync events.
-	if profile.Status.ObservedGeneration == profile.Generation {
+	if profile.Status.ObservedGeneration == profile.Generation && profile.Status.Provisioned {
 		return ctrl.Result{}, nil
 	}
 
