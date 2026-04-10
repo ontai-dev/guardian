@@ -304,7 +304,7 @@ func (d *simpleDB) ExecContext(ctx context.Context, query string, args ...any) (
 func (d *simpleDB) PingContext(ctx context.Context) error { return nil }
 
 // TestMigrationRunner_AppliesAllMigrations verifies that a fresh database receives
-// all three migrations and the schema_migrations table creation DDL.
+// all five migrations and the schema_migrations table creation DDL.
 func TestMigrationRunner_AppliesAllMigrations(t *testing.T) {
 	db := newSimpleDB()
 	runner := database.NewMigrationRunner(db)
@@ -313,8 +313,8 @@ func TestMigrationRunner_AppliesAllMigrations(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	// All three migration IDs must be recorded.
-	for _, id := range []int{1, 2, 3} {
+	// All five migration IDs must be recorded.
+	for _, id := range []int{1, 2, 3, 4, 5} {
 		if !db.applied[id] {
 			t.Errorf("migration %d not recorded in applied map", id)
 		}
@@ -347,7 +347,7 @@ func TestMigrationRunner_Idempotent(t *testing.T) {
 }
 
 // TestMigrationRunner_AppliesInOrder verifies that the migration DDL statements
-// contain the three expected table names in order.
+// contain the expected table/index names in order.
 func TestMigrationRunner_AppliesInOrder(t *testing.T) {
 	db := newSimpleDB()
 	runner := database.NewMigrationRunner(db)
@@ -356,12 +356,20 @@ func TestMigrationRunner_AppliesInOrder(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	// Find the exec calls containing each table creation.
-	tables := []string{"audit_events", "permission_cache", "identity_resolution_log"}
-	positions := make([]int, len(tables))
-	for i, table := range tables {
+	// Find the exec calls containing each migration's distinctive keyword, in order.
+	// Migration 5 uses CREATE UNIQUE INDEX; the keyword "idx_audit_events_cluster_seq"
+	// uniquely identifies it.
+	markers := []string{
+		"audit_events",
+		"permission_cache",
+		"identity_resolution_log",
+		"permission_snapshot_audit",
+		"idx_audit_events_cluster_seq",
+	}
+	positions := make([]int, len(markers))
+	for i, marker := range markers {
 		for j, exec := range db.execs {
-			if strings.Contains(exec, table) {
+			if strings.Contains(exec, marker) {
 				positions[i] = j
 				break
 			}
@@ -371,13 +379,13 @@ func TestMigrationRunner_AppliesInOrder(t *testing.T) {
 	for i := 1; i < len(positions); i++ {
 		if positions[i] <= positions[i-1] {
 			t.Errorf("migration %d (%s) applied before migration %d (%s)",
-				i+1, tables[i], i, tables[i-1])
+				i+1, markers[i], i, markers[i-1])
 		}
 	}
 }
 
-// TestMigrationRunner_SkipsAlreadyApplied verifies that a migration already
-// recorded in schema_migrations is not re-executed.
+// TestMigrationRunner_SkipsAlreadyApplied verifies that migrations already
+// recorded in schema_migrations are not re-executed.
 func TestMigrationRunner_SkipsAlreadyApplied(t *testing.T) {
 	db := newSimpleDB()
 	// Pre-seed migrations 1 and 2 as already applied.
@@ -389,12 +397,14 @@ func TestMigrationRunner_SkipsAlreadyApplied(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	// Only migration 3 should appear in exec calls (plus schema_migrations table ensure).
+	// Migrations 1 and 2 must not re-appear; migrations 3, 4, 5 must be applied.
 	hasAuditEvents := false
 	hasPermissionCache := false
 	hasIdentityLog := false
+	hasSnapshotAudit := false
+	hasUniqueIndex := false
 	for _, exec := range db.execs {
-		if strings.Contains(exec, "audit_events") {
+		if strings.Contains(exec, "audit_events") && strings.Contains(exec, "CREATE TABLE") {
 			hasAuditEvents = true
 		}
 		if strings.Contains(exec, "permission_cache") {
@@ -402,6 +412,12 @@ func TestMigrationRunner_SkipsAlreadyApplied(t *testing.T) {
 		}
 		if strings.Contains(exec, "identity_resolution_log") {
 			hasIdentityLog = true
+		}
+		if strings.Contains(exec, "permission_snapshot_audit") {
+			hasSnapshotAudit = true
+		}
+		if strings.Contains(exec, "idx_audit_events_cluster_seq") {
+			hasUniqueIndex = true
 		}
 	}
 
@@ -413,6 +429,12 @@ func TestMigrationRunner_SkipsAlreadyApplied(t *testing.T) {
 	}
 	if !hasIdentityLog {
 		t.Error("migration 3 (identity_resolution_log) was not applied")
+	}
+	if !hasSnapshotAudit {
+		t.Error("migration 4 (permission_snapshot_audit) was not applied")
+	}
+	if !hasUniqueIndex {
+		t.Error("migration 5 (idx_audit_events_cluster_seq) was not applied")
 	}
 }
 
@@ -501,6 +523,68 @@ func TestMigrationRunner_Migration003_IdentityResolutionLogColumns(t *testing.T)
 		if !strings.Contains(logSQL, col) {
 			t.Errorf("identity_resolution_log migration DDL missing required column %q", col)
 		}
+	}
+}
+
+// TestMigrationRunner_Migration004_PermissionSnapshotAuditColumns verifies that the DDL
+// for migration 004 contains all columns required by the permission_snapshot_audit table.
+// guardian-schema.md §7, INV-026.
+func TestMigrationRunner_Migration004_PermissionSnapshotAuditColumns(t *testing.T) {
+	db := newSimpleDB()
+	runner := database.NewMigrationRunner(db)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var snapshotSQL string
+	for _, exec := range db.execs {
+		if strings.Contains(exec, "permission_snapshot_audit") && strings.Contains(exec, "CREATE") {
+			snapshotSQL = exec
+			break
+		}
+	}
+	if snapshotSQL == "" {
+		t.Fatal("permission_snapshot_audit CREATE TABLE statement not found in exec calls")
+	}
+
+	required := []string{
+		"snapshot_name", "namespace", "target_cluster", "snapshot_hash",
+		"generated_at", "signed_by", "signed_at", "delivered_at", "receipt_name",
+	}
+	for _, col := range required {
+		if !strings.Contains(snapshotSQL, col) {
+			t.Errorf("permission_snapshot_audit migration DDL missing required column %q", col)
+		}
+	}
+}
+
+// TestMigrationRunner_Migration005_UniqueIndexPresent verifies that migration 005 emits a
+// CREATE UNIQUE INDEX statement targeting audit_events(cluster_id, sequence_number).
+func TestMigrationRunner_Migration005_UniqueIndexPresent(t *testing.T) {
+	db := newSimpleDB()
+	runner := database.NewMigrationRunner(db)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var indexSQL string
+	for _, exec := range db.execs {
+		if strings.Contains(exec, "idx_audit_events_cluster_seq") {
+			indexSQL = exec
+			break
+		}
+	}
+	if indexSQL == "" {
+		t.Fatal("idx_audit_events_cluster_seq index statement not found in exec calls")
+	}
+	if !strings.Contains(indexSQL, "CREATE UNIQUE INDEX") {
+		t.Errorf("migration 005 DDL is not a CREATE UNIQUE INDEX: %s", indexSQL)
+	}
+	if !strings.Contains(indexSQL, "audit_events") {
+		t.Errorf("migration 005 index does not target audit_events table: %s", indexSQL)
+	}
+	if !strings.Contains(indexSQL, "cluster_id") || !strings.Contains(indexSQL, "sequence_number") {
+		t.Errorf("migration 005 index missing cluster_id or sequence_number columns: %s", indexSQL)
 	}
 }
 

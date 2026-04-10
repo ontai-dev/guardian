@@ -154,6 +154,10 @@ type migration struct {
 // Migration 001: audit_events — persistent audit log for all authorization decisions.
 // Migration 002: permission_cache — short-lived cache for EPG decision results.
 // Migration 003: identity_resolution_log — record of identity provider resolutions.
+// Migration 004: permission_snapshot_audit — audit trail for PermissionSnapshot
+//   generation, signing, delivery, and receipt acknowledgement. guardian-schema.md §7.
+// Migration 005: unique index on audit_events(cluster_id, sequence_number) — prevents
+//   duplicate event insertion under concurrent AuditSinkReconciler goroutines.
 var migrations = []migration{
 	{
 		id: 1,
@@ -189,6 +193,35 @@ var migrations = []migration{
 			resolved_profile TEXT         NOT NULL,
 			resolved_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 		)`,
+	},
+	{
+		// permission_snapshot_audit tracks the lifecycle of every PermissionSnapshot CR:
+		// generation by Guardian, signing by management Conductor, delivery to target
+		// cluster Conductor, and receipt acknowledgement. Provides the PermissionSnapshot
+		// audit trail required by guardian-schema.md §7. INV-026.
+		id: 4,
+		sql: `CREATE TABLE IF NOT EXISTS permission_snapshot_audit (
+			id               BIGSERIAL    PRIMARY KEY,
+			snapshot_name    TEXT         NOT NULL,
+			namespace        TEXT         NOT NULL,
+			target_cluster   TEXT         NOT NULL,
+			snapshot_hash    TEXT         NOT NULL DEFAULT '',
+			generated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+			signed_by        TEXT         NOT NULL DEFAULT '',
+			signed_at        TIMESTAMPTZ,
+			delivered_at     TIMESTAMPTZ,
+			receipt_name     TEXT
+		)`,
+	},
+	{
+		// Unique index prevents duplicate audit_events rows when concurrent
+		// AuditSinkReconciler goroutines both pass the EventExists check before
+		// either inserts. The second INSERT returns a constraint violation which
+		// the reconciler treats as a transient error and requeues; on requeue,
+		// EventExists returns true and the event is correctly skipped.
+		id: 5,
+		sql: `CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_cluster_seq
+			ON audit_events (cluster_id, sequence_number)`,
 	},
 }
 
