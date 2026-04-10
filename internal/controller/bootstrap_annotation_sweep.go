@@ -153,6 +153,9 @@ func (r *BootstrapAnnotationRunnable) sweepNamespacedResources(ctx context.Conte
 						AnnotationRBACEnforcementMode:    AnnotationRBACEnforcementModeAudit,
 					},
 				},
+				// RoleRef has no omitempty — must carry the existing value or the API
+				// server rejects the SSA patch with "unsupported role reference kind: \"\"".
+				RoleRef: item.RoleRef,
 			}
 			return r.Client.Patch(ctx, patch, client.Apply, client.ForceOwnership, client.FieldOwner(bootstrapAnnotationFieldManager))
 		}, sum); err != nil {
@@ -232,6 +235,9 @@ func (r *BootstrapAnnotationRunnable) sweepClusterResources(ctx context.Context,
 						AnnotationRBACEnforcementMode:    AnnotationRBACEnforcementModeAudit,
 					},
 				},
+				// RoleRef has no omitempty — must carry the existing value or the API
+				// server rejects the SSA patch with "unsupported role reference kind: \"\"".
+				RoleRef: item.RoleRef,
 			}
 			return r.Client.Patch(ctx, patch, client.Apply, client.ForceOwnership, client.FieldOwner(bootstrapAnnotationFieldManager))
 		}, sum); err != nil {
