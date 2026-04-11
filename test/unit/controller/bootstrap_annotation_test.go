@@ -216,6 +216,46 @@ func TestBootstrapAnnotationSweep_Idempotent(t *testing.T) {
 	}
 }
 
+// Test: system: prefixed ClusterRoles are skipped by the sweep.
+// Kubernetes built-in ClusterRoles (e.g. system:kube-controller-manager) must never
+// be annotated — patching them risks corrupting system RBAC. CS-INV-007.
+func TestBootstrapAnnotationSweep_SkipsSystemPrefixedClusterRoles(t *testing.T) {
+	ns := makeNamespace("ont-system", nil)
+	systemCR := makeClusterRole("system:kube-controller-manager")
+	regularCR := makeClusterRole("platform-cluster-role")
+
+	runnable, done := buildSweepRunnable(t, ns, systemCR, regularCR)
+	if err := runnable.Start(context.Background()); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	if !done.Load() {
+		t.Fatal("SweepDone must be true after Start completes")
+	}
+
+	// system: ClusterRole must NOT be annotated.
+	gotSystem := &rbacv1.ClusterRole{}
+	if err := runnable.Client.Get(context.Background(), types.NamespacedName{
+		Name: "system:kube-controller-manager",
+	}, gotSystem); err != nil {
+		t.Fatalf("get system ClusterRole: %v", err)
+	}
+	if gotSystem.Annotations[webhook.AnnotationRBACOwner] == webhook.AnnotationRBACOwnerValue {
+		t.Error("system: ClusterRole must not be annotated by sweep")
+	}
+
+	// Regular ClusterRole must still be annotated.
+	gotRegular := &rbacv1.ClusterRole{}
+	if err := runnable.Client.Get(context.Background(), types.NamespacedName{
+		Name: "platform-cluster-role",
+	}, gotRegular); err != nil {
+		t.Fatalf("get regular ClusterRole: %v", err)
+	}
+	if gotRegular.Annotations[webhook.AnnotationRBACOwner] != webhook.AnnotationRBACOwnerValue {
+		t.Errorf("regular ClusterRole: want ontai.dev/rbac-owner=guardian, got %q",
+			gotRegular.Annotations[webhook.AnnotationRBACOwner])
+	}
+}
+
 // Test 4 — Sweep does not annotate already-owned resources.
 // Resources that already carry ontai.dev/rbac-owner=guardian must be counted as
 // already-owned and left untouched (no enforcement-mode stamp added by sweep).
