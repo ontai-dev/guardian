@@ -308,7 +308,7 @@ func (r *cnpgStartupRunnable) Start(ctx context.Context) error {
 		return fmt.Errorf("CNPG startup aborted: %w", err)
 	}
 	r.lazyDB.Set(database.NewSQLAuditStore(db))
-	log.Info("CNPG connection established; AuditSinkReconciler operational")
+	log.Info("CNPG ready — flushing pending audit events")
 	return nil
 }
 

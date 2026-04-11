@@ -7,8 +7,8 @@
 //
 //   - SQLAuditWriter: production path, writes via SQLAuditStore.InsertEvent.
 //   - NoopAuditWriter: test and tenant-role path, discards all events.
-//   - LazyAuditWriter: management startup path, silently drops events while
-//     CNPG is not yet connected (degraded mode), then writes once Set is called.
+//   - LazyAuditWriter: management startup path, logs a warning and drops events
+//     while CNPG is not yet connected (degraded mode). No in-memory buffering.
 //
 // guardian-schema.md §16.
 package database
@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 )
 
 // AuditWriter is the interface through which Guardian components write audit
@@ -66,24 +65,18 @@ func (NoopAuditWriter) Write(_ context.Context, _ AuditEvent) error { return nil
 // LazyAuditWriter
 // ---------------------------------------------------------------------------
 
-// maxPendingAuditEvents is the maximum number of events buffered in the
-// LazyAuditWriter ring buffer while CNPG is not yet available.
-const maxPendingAuditEvents = 100
-
 // LazyAuditWriter wraps a LazyAuditDatabase and provides degraded-mode audit
-// writing with a bounded in-memory ring buffer.
+// writing. When the database is not yet connected (ErrDatabaseNotReady), the
+// event is logged as a structured warning and silently dropped so callers are
+// not interrupted. No in-memory buffering is used — simplicity is preferred
+// over completeness for pre-CNPG events.
 //
-// When the database is not yet connected (ErrDatabaseNotReady), events are
-// buffered in a ring buffer of up to maxPendingAuditEvents entries. Oldest
-// events are evicted when the buffer is full. Once cnpgStartupRunnable calls
-// LazyAuditDatabase.Set, the next Write call attempts to flush all buffered
-// events before writing the new one.
+// Once cnpgStartupRunnable calls LazyAuditDatabase.Set, subsequent Write calls
+// are forwarded to the real database without delay.
 //
-// Thread-safe via an internal mutex. guardian-schema.md §3 Step 1, §16.
+// guardian-schema.md §3 Step 1, §16.
 type LazyAuditWriter struct {
-	db      *LazyAuditDatabase
-	mu      sync.Mutex
-	pending []AuditEvent
+	db *LazyAuditDatabase
 }
 
 // NewLazyAuditWriter returns a LazyAuditWriter backed by db.
@@ -93,47 +86,15 @@ func NewLazyAuditWriter(db *LazyAuditDatabase) *LazyAuditWriter {
 
 // Write inserts event via the lazy database.
 //
-// If the database is not yet ready:
-//   - The event is added to the in-memory ring buffer (evicting the oldest if full).
-//   - nil is returned so callers are not interrupted.
-//
-// If the database is ready and there are buffered events:
-//   - A flush attempt is made first. Events that still fail with ErrDatabaseNotReady
-//     are kept; events that fail with other errors are logged and dropped.
-//   - The new event is then written normally.
-//
-// All non-transient errors on the current event are propagated to the caller.
+// When the database is not yet ready, logs a structured warning and returns nil
+// so callers are not interrupted. All other errors are propagated.
 func (w *LazyAuditWriter) Write(ctx context.Context, event AuditEvent) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Attempt to flush any buffered events now that the database may be ready.
-	if len(w.pending) > 0 {
-		remaining := w.pending[:0]
-		for _, pe := range w.pending {
-			if err := w.db.InsertEvent(ctx, pe); err != nil {
-				if errors.Is(err, ErrDatabaseNotReady) {
-					remaining = append(remaining, pe)
-				} else {
-					slog.Default().Warn("dropping buffered audit event: non-transient insert error",
-						"action", pe.Action, "resource", pe.Resource, "error", err)
-				}
-			}
-		}
-		w.pending = remaining
-	}
-
-	// Write the current event.
 	if err := w.db.InsertEvent(ctx, event); err != nil {
 		if errors.Is(err, ErrDatabaseNotReady) {
-			// Buffer the event; evict oldest if the ring is full.
-			if len(w.pending) >= maxPendingAuditEvents {
-				slog.Default().Warn("audit ring buffer full — evicting oldest event",
-					"dropped_action", w.pending[0].Action,
-					"dropped_resource", w.pending[0].Resource)
-				w.pending = w.pending[1:]
-			}
-			w.pending = append(w.pending, event)
+			slog.Default().Warn("audit event dropped — database not ready",
+				"action", event.Action,
+				"resource", event.Resource,
+				"subject", event.Subject)
 			return nil
 		}
 		return err
