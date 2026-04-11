@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 	"github.com/ontai-dev/guardian/internal/epg"
 )
 
@@ -83,6 +84,10 @@ type EPGReconciler struct {
 	// considered fresh. Read from PERMISSION_SNAPSHOT_FRESHNESS_WINDOW env var at
 	// controller startup. Defaults to 300 (5 minutes) if absent or invalid.
 	FreshnessWindowSeconds int64
+
+	// AuditWriter receives operational audit events from this reconciler.
+	// Nil is safe — events are silently dropped when no writer is configured.
+	AuditWriter database.AuditWriter
 }
 
 // Reconcile is the main reconciliation loop for the EPGReconciler.
@@ -276,6 +281,16 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		upsertedSnapshots = append(upsertedSnapshots, snapshot)
 		logger.Info("EPGReconciler: PermissionSnapshot upserted",
 			"cluster", cluster, "name", snapshot.Name, "version", snapshot.Spec.Version)
+
+		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+			ClusterID:      "management",
+			Subject:        "guardian",
+			Action:         "permissionsnapshot.computed",
+			Resource:       cluster,
+			Decision:       "system",
+			MatchedPolicy:  snapshot.Spec.Version,
+			SequenceNumber: auditSeq(),
+		})
 	}
 
 	// Step J — Emit a Normal event on each generated or updated PermissionSnapshot.
@@ -283,6 +298,17 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		r.Recorder.Eventf(snapshot, corev1.EventTypeNormal, "EPGComputed",
 			"EPG computed. Version: %s.", snapshot.Spec.Version)
 	}
+
+	// Step J-post — Emit a single audit event for the full computation run.
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        "guardian",
+		Action:         "epg.computation_complete",
+		Resource:       strings.Join(result.TargetClusters, ","),
+		Decision:       "system",
+		MatchedPolicy:  fmt.Sprintf("%d snapshots", len(upsertedSnapshots)),
+		SequenceNumber: auditSeq(),
+	})
 
 	// Step K — Emit a Normal event on the management cluster's RunnerConfig.
 	// runner.ontai.dev types are not imported into this operator. Unstructured access
@@ -356,6 +382,15 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 				"Drift detected: %s.", dr.Reason)
 			logger.Info("reconcileDrift: drift regression detected",
 				"snapshot", sn.Name, "reason", dr.Reason)
+			writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+				ClusterID:      "management",
+				Subject:        "guardian",
+				Action:         "permissionsnapshot.drift_detected",
+				Resource:       sn.Name,
+				Decision:       "system",
+				MatchedPolicy:  dr.Reason,
+				SequenceNumber: auditSeq(),
+			})
 		} else if !dr.IsDrifted && prevDrift {
 			// Delivery confirmed: snapshot was drifted, now acknowledged.
 			r.Recorder.Eventf(sn, corev1.EventTypeNormal, "SnapshotDelivered",

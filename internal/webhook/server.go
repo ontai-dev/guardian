@@ -3,6 +3,8 @@ package webhook
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // WebhookPath is the HTTP path at which the RBAC admission webhook is registered.
@@ -16,6 +18,10 @@ const WebhookPath = "/validate-rbac"
 // only after the leader lock is acquired.
 type AdmissionWebhookServer struct {
 	mgr ctrl.Manager
+
+	// AuditWriter is wired into the RBACAdmissionHandler to record admission audit
+	// events. Set this field before calling Register. Nil is safe (events discarded).
+	AuditWriter database.AuditWriter
 }
 
 // NewAdmissionWebhookServer creates a new AdmissionWebhookServer bound to mgr.
@@ -45,6 +51,7 @@ func (s *AdmissionWebhookServer) Register(window *BootstrapWindow, namespaceMode
 	handler := &RBACAdmissionHandler{
 		bootstrapWindow: window,
 		namespaceMode:   namespaceMode,
+		auditWriter:     s.AuditWriter,
 	}
 	s.mgr.GetWebhookServer().Register(WebhookPath, &admission.Webhook{Handler: handler})
 	// Close the bootstrap RBAC window. The webhook handler is now registered and

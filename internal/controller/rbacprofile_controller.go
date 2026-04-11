@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // rbacFieldOwner is the server-side apply field manager name for RBACProfileReconciler.
@@ -47,6 +48,10 @@ type RBACProfileReconciler struct {
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
 	Recorder record.EventRecorder
+
+	// AuditWriter receives operational audit events from this reconciler.
+	// Nil is safe — events are silently dropped when no writer is configured.
+	AuditWriter database.AuditWriter
 }
 
 // epgRecomputeAnnotation is the inter-reconciler signal annotation.
@@ -152,6 +157,16 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.Info("RBACProfile validation failed",
 			"name", profile.Name, "namespace", profile.Namespace,
 			"failedChecks", validationResult.FailedChecks)
+
+		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+			ClusterID:      "management",
+			Subject:        "guardian",
+			Action:         "rbacprofile.validation_failed",
+			Resource:       profile.Name,
+			Decision:       "system",
+			MatchedPolicy:  joinedReasons,
+			SequenceNumber: auditSeq(),
+		})
 
 		// A structurally invalid profile requires human correction. No requeue.
 		return ctrl.Result{}, nil
@@ -313,6 +328,16 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	logger.Info("RBACProfile provisioned",
 		"name", profile.Name, "namespace", profile.Namespace)
 
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        profile.Spec.PrincipalRef,
+		Action:         "rbacprofile.provisioned",
+		Resource:       profile.Name,
+		Decision:       "system",
+		MatchedPolicy:  "ProvisioningComplete",
+		SequenceNumber: auditSeq(),
+	})
+
 	// Step J — Materialise Kubernetes RBAC resources for this profile.
 	//
 	// provisioned=true is committed ONLY after Step J succeeds (see explicit status
@@ -417,12 +442,30 @@ func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, prof
 	if err := r.Client.Patch(ctx, cr, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
 		return fmt.Errorf("apply ClusterRole %s: %w", clusterRoleName, err)
 	}
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        profile.Spec.PrincipalRef,
+		Action:         "clusterrole.materialized",
+		Resource:       clusterRoleName,
+		Decision:       "system",
+		MatchedPolicy:  profile.Name,
+		SequenceNumber: auditSeq(),
+	})
 
 	// ClusterRoleBinding.
 	crb := buildClusterRoleBinding(clusterRoleName, saName, ns)
 	if err := r.Client.Patch(ctx, crb, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
 		return fmt.Errorf("apply ClusterRoleBinding %s: %w", clusterRoleName, err)
 	}
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        profile.Spec.PrincipalRef,
+		Action:         "clusterrolebinding.materialized",
+		Resource:       clusterRoleName,
+		Decision:       "system",
+		MatchedPolicy:  profile.Name,
+		SequenceNumber: auditSeq(),
+	})
 
 	return nil
 }

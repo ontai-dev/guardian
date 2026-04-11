@@ -12,6 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/ontai-dev/guardian/internal/database"
 	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
@@ -75,8 +76,10 @@ func mustBuildSweepAnnotationPatch() []byte {
 // On completion SweepDone is set to true, unblocking BootstrapController.
 // guardian-schema.md §4. INV-020, CS-INV-004.
 type BootstrapAnnotationRunnable struct {
-	Client    client.Client
-	SweepDone *atomic.Bool
+	Client      client.Client
+	SweepDone   *atomic.Bool
+	// AuditWriter receives the sweep-complete audit event. Nil is safe.
+	AuditWriter database.AuditWriter
 }
 
 // sweepSummary accumulates structured sweep metrics for the completion log.
@@ -129,6 +132,17 @@ func (r *BootstrapAnnotationRunnable) Start(ctx context.Context) error {
 	)
 
 	r.SweepDone.Store(true)
+
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        "guardian",
+		Action:         "bootstrap.annotation_sweep_complete",
+		Resource:       "cluster",
+		Decision:       "system",
+		MatchedPolicy:  "BootstrapSweep",
+		SequenceNumber: int64(summary.resourcesAnnotated), //nolint:gosec — non-negative count
+	})
+
 	return nil
 }
 

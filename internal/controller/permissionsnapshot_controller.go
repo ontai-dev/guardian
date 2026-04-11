@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 	seamconditions "github.com/ontai-dev/seam-core/pkg/conditions"
 )
 
@@ -51,6 +52,10 @@ type PermissionSnapshotReconciler struct {
 	// Now is the time provider. In production it returns time.Now(). Inject a fixed
 	// time in tests to make freshness assertions deterministic.
 	Now func() time.Time
+
+	// AuditWriter receives operational audit events from this reconciler.
+	// Nil is safe — events are silently dropped when no writer is configured.
+	AuditWriter database.AuditWriter
 }
 
 // now returns the current time, using the injected provider if set.
@@ -158,7 +163,22 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"age", age, "window", windowDuration)
 	}
 
-	// Step 6 — Requeue after FreshnessWindowSeconds so a fresh snapshot is
+	// Step 6 — Emit a drift audit event if the snapshot is currently drifted.
+	// The EPGReconciler drift loop emits on transitions; this provides a periodic
+	// audit trail for snapshots that remain drifted across multiple requeue cycles.
+	if snapshot.Status.Drift {
+		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+			ClusterID:      "management",
+			Subject:        "guardian",
+			Action:         "permissionsnapshot.drift_detected",
+			Resource:       snapshot.Name,
+			Decision:       "system",
+			MatchedPolicy:  "DriftObserved",
+			SequenceNumber: auditSeq(),
+		})
+	}
+
+	// Step 7 — Requeue after FreshnessWindowSeconds so a fresh snapshot is
 	// re-evaluated when it may become stale. A snapshot that is already stale is
 	// also requeued so it surfaces an event each window period.
 	return ctrl.Result{RequeueAfter: windowDuration}, nil

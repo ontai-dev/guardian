@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // RBACAdmissionHandler is a controller-runtime admission.Handler that enforces
@@ -23,6 +26,8 @@ type RBACAdmissionHandler struct {
 	// Observe namespaces run full evaluation but always return allowed.
 	// INV-020, CS-INV-004.
 	namespaceMode NamespaceModeResolver
+	// auditWriter receives admission audit events. Nil is safe.
+	auditWriter database.AuditWriter
 }
 
 // partialObject is used for partial JSON unmarshalling of the admitted resource.
@@ -62,12 +67,53 @@ func (h *RBACAdmissionHandler) Handle(ctx context.Context, req admission.Request
 			"operation", req.Operation,
 			"reason", decision.Reason,
 		)
+		webhookAuditWrite(ctx, h.auditWriter, database.AuditEvent{
+			ClusterID:      "management",
+			Subject:        req.UserInfo.Username,
+			Action:         "rbac.would_deny",
+			Resource:       req.Name,
+			Decision:       "audit",
+			MatchedPolicy:  decision.Reason,
+			SequenceNumber: time.Now().UnixNano(),
+		})
 	}
 
 	if decision.Allowed {
+		// Emit an audit event for admits of RBAC resources only — admitting
+		// non-RBAC resources is not audit-significant for the guardian log.
+		if InterceptedKinds[req.Kind.Kind] {
+			webhookAuditWrite(ctx, h.auditWriter, database.AuditEvent{
+				ClusterID:      "management",
+				Subject:        req.UserInfo.Username,
+				Action:         "rbac.admitted",
+				Resource:       req.Name,
+				Decision:       "admit",
+				MatchedPolicy:  "",
+				SequenceNumber: time.Now().UnixNano(),
+			})
+		}
 		return admission.Allowed("")
 	}
+
+	webhookAuditWrite(ctx, h.auditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        req.UserInfo.Username,
+		Action:         "rbac.denied",
+		Resource:       req.Name,
+		Decision:       "deny",
+		MatchedPolicy:  decision.Reason,
+		SequenceNumber: time.Now().UnixNano(),
+	})
 	return admission.Denied(decision.Reason)
+}
+
+// webhookAuditWrite is a nil-safe helper for audit writes from the webhook package.
+// Failures are discarded — admission decisions must never be blocked by audit errors.
+func webhookAuditWrite(ctx context.Context, aw database.AuditWriter, event database.AuditEvent) {
+	if aw == nil {
+		return
+	}
+	_ = aw.Write(ctx, event)
 }
 
 // InjectDecoder injects the decoder from controller-runtime's webhook builder.

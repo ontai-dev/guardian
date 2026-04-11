@@ -136,18 +136,20 @@ func main() {
 	// (causing a requeue) until cnpgStartupRunnable calls Set.
 	// guardian-schema.md §3 Step 1, §16.
 	var lazyAuditDB *database.LazyAuditDatabase
+	var auditWriter database.AuditWriter = database.NoopAuditWriter{}
 	if guardianRole == role.RoleManagement {
 		lazyAuditDB = database.NewLazyAuditDatabase()
+		auditWriter = database.NewLazyAuditWriter(lazyAuditDB)
 	}
 
 	// Register controllers shared by both roles.
-	if err := setupSharedControllers(mgr); err != nil {
+	if err := setupSharedControllers(mgr, auditWriter); err != nil {
 		setupLog.Error(err, "unable to set up shared controllers")
 		os.Exit(1)
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, operatorNamespace, freshnessWindow); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, auditWriter, operatorNamespace, freshnessWindow); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -201,6 +203,7 @@ func main() {
 
 	bootstrapWindow := webhook.NewBootstrapWindow()
 	webhookServer := webhook.NewAdmissionWebhookServer(mgr)
+	webhookServer.AuditWriter = auditWriter
 	baseResolver := &webhook.KubeNamespaceModeResolver{Client: mgr.GetClient()}
 	namespaceModeResolver := webhook.NewGuardedNamespaceModeResolver(baseResolver, modeGate, enforcementRegistry)
 	if err := webhookServer.Register(bootstrapWindow, namespaceModeResolver); err != nil {
@@ -225,8 +228,9 @@ func main() {
 	// completion via sweepDone, unblocking BootstrapController from advancing
 	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
 	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
-		Client:    mgr.GetClient(),
-		SweepDone: sweepDone,
+		Client:      mgr.GetClient(),
+		SweepDone:   sweepDone,
+		AuditWriter: auditWriter,
 	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)
@@ -310,19 +314,21 @@ func (r *cnpgStartupRunnable) Start(ctx context.Context) error {
 
 // setupSharedControllers registers the controllers that run in both roles.
 // guardian-schema.md §15.
-func setupSharedControllers(mgr ctrl.Manager) error {
+func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.RBACPolicyReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("rbacpolicy-controller"),
+		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
 
 	if err := (&controller.RBACProfileReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("rbacprofile-controller"),
+		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -346,9 +352,10 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 	// PermissionSnapshotReconciler: runs under both roles.
 	// Both management and tenant need freshness tracking. guardian-schema.md §7.
 	if err := (&controller.PermissionSnapshotReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("permissionsnapshot-controller"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("permissionsnapshot-controller"),
+		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -358,10 +365,10 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string, freshnessWindow int64) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
 	switch r {
 	case role.RoleManagement:
-		return setupManagementControllers(mgr, epgStore, auditDB, operatorNamespace, freshnessWindow)
+		return setupManagementControllers(mgr, epgStore, auditDB, aw, operatorNamespace, freshnessWindow)
 	case role.RoleTenant:
 		return setupTenantControllers(mgr)
 	default:
@@ -372,7 +379,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string, freshnessWindow int64) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -388,6 +395,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 		Store:                  epgStore,
 		OperatorNamespace:      operatorNamespace,
 		FreshnessWindowSeconds: freshnessWindow,
+		AuditWriter:            aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -398,10 +406,11 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	// Reconcile returns ErrDatabaseNotReady and requeues audit batch ConfigMaps.
 	// guardian-schema.md §3 Step 1, §16.
 	if err := (&controller.AuditSinkReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("auditsink-controller"),
-		DB:       auditDB,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("auditsink-controller"),
+		DB:          auditDB,
+		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

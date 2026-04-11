@@ -62,6 +62,11 @@ type AuditSinkReconciler struct {
 	// The interface is defined in internal/database so that mock implementations
 	// can be injected in tests without importing a real CNPG driver.
 	DB database.AuditDatabase
+
+	// AuditWriter receives management-cluster audit events (distinct from tenant
+	// events forwarded via DB). Nil is safe — events are silently dropped when no
+	// writer is configured.
+	AuditWriter database.AuditWriter
 }
 
 // Reconcile processes an audit batch ConfigMap.
@@ -113,6 +118,16 @@ func (r *AuditSinkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"name", cm.Name, "namespace", cm.Namespace,
 		"clusterID", clusterID,
 		"inserted", inserted, "skipped", skipped)
+
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        "guardian",
+		Action:         "audit_batch.processed",
+		Resource:       cm.Name,
+		Decision:       "system",
+		MatchedPolicy:  clusterID,
+		SequenceNumber: int64(inserted), //nolint:gosec — inserted is a non-negative count
+	})
 
 	// Delete the ConfigMap after successful processing.
 	return ctrl.Result{}, r.deleteConfigMap(ctx, cm)

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // rbacPolicyFinalizer is added to every RBACPolicy on first reconcile to ensure
@@ -47,6 +48,10 @@ type RBACPolicyReconciler struct {
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
 	Recorder record.EventRecorder
+
+	// AuditWriter receives operational audit events from this reconciler.
+	// Nil is safe — events are silently dropped when no writer is configured.
+	AuditWriter database.AuditWriter
 }
 
 // Reconcile is the main reconciliation loop for RBACPolicy.
@@ -194,6 +199,16 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"name", policy.Name, "namespace", policy.Namespace,
 			"failedChecks", validationResult.FailedChecks)
 
+		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+			ClusterID:      "management",
+			Subject:        "guardian",
+			Action:         "rbacpolicy.validation_failed",
+			Resource:       policy.Name,
+			Decision:       "system",
+			MatchedPolicy:  joinedReasons,
+			SequenceNumber: auditSeq(),
+		})
+
 		// A structurally invalid policy requires human correction. The reconciler
 		// will be re-triggered on the next spec change. No requeue needed.
 		return ctrl.Result{}, nil
@@ -223,6 +238,16 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	logger.Info("RBACPolicy validated successfully",
 		"name", policy.Name, "namespace", policy.Namespace)
+
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      "management",
+		Subject:        "guardian",
+		Action:         "rbacpolicy.validated",
+		Resource:       policy.Name,
+		Decision:       "system",
+		MatchedPolicy:  "ValidationPassed",
+		SequenceNumber: auditSeq(),
+	})
 
 	return ctrl.Result{}, nil
 }
