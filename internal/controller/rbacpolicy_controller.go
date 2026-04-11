@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,9 +232,54 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // GenerationChangedPredicate prevents reconciliation when only the status
 // subresource is updated, breaking the reconcile loop that would otherwise
 // be triggered by the reconciler's own status patches.
+//
+// A startup Runnable is registered via mgr.Add to reconcile all pre-existing
+// RBACPolicy objects once after the informer cache is ready. This ensures objects
+// created before the controller started are validated on startup, not only when
+// their spec changes. guardian-schema.md §4, CS-INV-004.
 func (r *RBACPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.Add(&rbacPolicyStartupRunnable{
+		client:     mgr.GetClient(),
+		reconciler: r,
+	}); err != nil {
+		return fmt.Errorf("RBACPolicyReconciler: register startup runnable: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.RBACPolicy{}).
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
+}
+
+// rbacPolicyStartupRunnable reconciles all pre-existing RBACPolicy objects once
+// after the manager cache is ready. It runs as a manager Runnable (mgr.Add) so
+// it executes after informer cache sync. Failures are logged and do not abort
+// the manager — the controller's normal event-driven loop handles retries.
+type rbacPolicyStartupRunnable struct {
+	client     client.Client
+	reconciler *RBACPolicyReconciler
+}
+
+// Start implements manager.Runnable. It is called by the manager after the
+// informer cache has synced. It lists all RBACPolicy objects and directly
+// reconciles each one, ensuring pre-existing objects are validated on startup.
+func (s *rbacPolicyStartupRunnable) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("rbacpolicy-startup-reconcile")
+	log.Info("running startup reconcile for pre-existing RBACPolicy objects")
+
+	list := &securityv1alpha1.RBACPolicyList{}
+	if err := s.client.List(ctx, list); err != nil {
+		return fmt.Errorf("rbacpolicy startup reconcile: list RBACPolicy objects: %w", err)
+	}
+
+	for i := range list.Items {
+		p := &list.Items[i]
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: p.Name, Namespace: p.Namespace}}
+		if _, err := s.reconciler.Reconcile(ctx, req); err != nil {
+			log.Error(err, "startup reconcile failed for RBACPolicy",
+				"name", p.Name, "namespace", p.Namespace)
+		}
+	}
+
+	log.Info("startup reconcile complete", "count", len(list.Items))
+	return nil
 }
