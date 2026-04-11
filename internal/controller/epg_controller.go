@@ -78,6 +78,11 @@ type EPGReconciler struct {
 	// OperatorNamespace is the namespace where PermissionSnapshot CRs are written
 	// and where the operator itself runs. Populated from OPERATOR_NAMESPACE env var.
 	OperatorNamespace string
+
+	// FreshnessWindowSeconds is the window within which a PermissionSnapshot is
+	// considered fresh. Read from PERMISSION_SNAPSHOT_FRESHNESS_WINDOW env var at
+	// controller startup. Defaults to 300 (5 minutes) if absent or invalid.
+	FreshnessWindowSeconds int64
 }
 
 // Reconcile is the main reconciliation loop for the EPGReconciler.
@@ -228,6 +233,14 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	var upsertedSnapshots []*securityv1alpha1.PermissionSnapshot
 	for _, cluster := range result.TargetClusters {
 		snapshot := epg.BuildPermissionSnapshot(result, cluster, r.OperatorNamespace, existingByCluster[cluster])
+
+		// Propagate the configured freshness window so the PermissionSnapshot
+		// controller uses the operator-configured value rather than its internal
+		// default. BuildPermissionSnapshot does not set this field.
+		if r.FreshnessWindowSeconds > 0 {
+			// #nosec G115 — FreshnessWindowSeconds is validated positive at startup
+			snapshot.Spec.FreshnessWindowSeconds = int32(r.FreshnessWindowSeconds)
+		}
 
 		// Server-side apply to upsert the spec.
 		if err := r.Client.Patch(ctx, snapshot, client.Apply, client.ForceOwnership,

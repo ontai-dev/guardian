@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"sync/atomic"
 
 	_ "github.com/lib/pq" // registers "postgres" driver for database/sql
@@ -119,6 +120,15 @@ func main() {
 	// Create the in-memory EPG store shared between EPGReconciler and PermissionService.
 	epgStore := permissionservice.NewInMemoryEPGStore()
 
+	// Read PERMISSION_SNAPSHOT_FRESHNESS_WINDOW — the freshness window written into
+	// every PermissionSnapshot CR by EPGReconciler. Defaults to 300 (5 minutes).
+	freshnessWindow := int64(300)
+	if v := os.Getenv("PERMISSION_SNAPSHOT_FRESHNESS_WINDOW"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			freshnessWindow = n
+		}
+	}
+
 	// For role=management: create the lazy database handle now. The real CNPG
 	// connection is established by cnpgStartupRunnable.Start after the
 	// controller-runtime informer cache is running. The AuditSinkReconciler
@@ -137,7 +147,7 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, operatorNamespace); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, operatorNamespace, freshnessWindow); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -348,10 +358,10 @@ func setupSharedControllers(mgr ctrl.Manager) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string, freshnessWindow int64) error {
 	switch r {
 	case role.RoleManagement:
-		return setupManagementControllers(mgr, epgStore, auditDB, operatorNamespace)
+		return setupManagementControllers(mgr, epgStore, auditDB, operatorNamespace, freshnessWindow)
 	case role.RoleTenant:
 		return setupTenantControllers(mgr)
 	default:
@@ -362,7 +372,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, operatorNamespace string, freshnessWindow int64) error {
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -372,11 +382,12 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	}
 
 	if err := (&controller.EPGReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("epg-controller"),
-		Store:             epgStore,
-		OperatorNamespace: operatorNamespace,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Recorder:               mgr.GetEventRecorderFor("epg-controller"),
+		Store:                  epgStore,
+		OperatorNamespace:      operatorNamespace,
+		FreshnessWindowSeconds: freshnessWindow,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
