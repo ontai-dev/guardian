@@ -191,6 +191,23 @@ func TestValidateRBACProfileSpec_MultipleFailuresCollected(t *testing.T) {
 	}
 }
 
+// TestValidateRBACProfileSpec_DomainIdentityRefOptional verifies that setting
+// domainIdentityRef does not affect validation — the field is optional and
+// informational. guardian-schema.md §7, CLAUDE.md §14 Decision 2.
+func TestValidateRBACProfileSpec_DomainIdentityRefOptional(t *testing.T) {
+	spec := validProfileSpec()
+	spec.DomainIdentityRef = "guardian"
+
+	result := controller.ValidateRBACProfileSpec(spec)
+
+	if !result.Valid {
+		t.Errorf("expected Valid=true with domainIdentityRef set; reasons: %v", result.Reasons)
+	}
+	if len(result.Reasons) != 0 {
+		t.Errorf("expected no reasons when domainIdentityRef is set; got: %v", result.Reasons)
+	}
+}
+
 // containsAnyReason is a test helper that returns true if any reason string
 // contains the given substring.
 func containsAnyReason(reasons []string, substr string) bool {
