@@ -41,6 +41,7 @@ import (
 	"github.com/ontai-dev/guardian/internal/permissionservice"
 	"github.com/ontai-dev/guardian/internal/role"
 	"github.com/ontai-dev/guardian/internal/webhook"
+	seamv1alpha1 "github.com/ontai-dev/seam-core/api/v1alpha1"
 )
 
 var scheme = runtime.NewScheme()
@@ -48,6 +49,9 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(securityv1alpha1.AddToScheme(scheme))
+	// SeamMembership CRD is owned by seam-core (infrastructure.ontai.dev).
+	// Guardian must register it to watch and reconcile SeamMembership objects.
+	utilruntime.Must(seamv1alpha1.AddToScheme(scheme))
 }
 
 func main() {
@@ -356,6 +360,16 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 		Scheme:      mgr.GetScheme(),
 		Recorder:    mgr.GetEventRecorderFor("permissionsnapshot-controller"),
 		AuditWriter: aw,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	// SeamMembershipReconciler: validates SeamMembership CRs against the operator's
+	// RBACProfile and admits members to the Seam infrastructure family.
+	// Watches infrastructure.ontai.dev/v1alpha1 SeamMembership CRs from seam-core.
+	if err := (&controller.SeamMembershipReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
