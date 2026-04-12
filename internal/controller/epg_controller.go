@@ -25,6 +25,7 @@ import (
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/database"
 	"github.com/ontai-dev/guardian/internal/epg"
+	seamconditions "github.com/ontai-dev/seam-core/pkg/conditions"
 )
 
 const (
@@ -524,14 +525,43 @@ func (epgRecomputeAnnotationFilter) Update(e event.UpdateEvent) bool {
 func (epgRecomputeAnnotationFilter) Delete(_ event.DeleteEvent) bool   { return false }
 func (epgRecomputeAnnotationFilter) Generic(_ event.GenericEvent) bool { return false }
 
-// SetupWithManager registers the EPGReconciler to watch six resource types.
+// permissionSnapshotStaleFilter is a predicate that passes only update events where
+// the PermissionSnapshot Fresh condition transitions from True to False. This allows
+// the EPGReconciler to trigger a full EPG recompute immediately when a snapshot goes
+// stale, rather than waiting for the next annotation-based trigger.
+type permissionSnapshotStaleFilter struct {
+	predicate.Funcs
+}
+
+func (permissionSnapshotStaleFilter) Update(e event.UpdateEvent) bool {
+	newSnap, ok := e.ObjectNew.(*securityv1alpha1.PermissionSnapshot)
+	if !ok {
+		return false
+	}
+	oldSnap, ok := e.ObjectOld.(*securityv1alpha1.PermissionSnapshot)
+	if !ok {
+		return false
+	}
+	oldFresh := securityv1alpha1.FindCondition(oldSnap.Status.Conditions, seamconditions.ConditionTypePermissionSnapshotFresh)
+	newFresh := securityv1alpha1.FindCondition(newSnap.Status.Conditions, seamconditions.ConditionTypePermissionSnapshotFresh)
+	oldWasFresh := oldFresh != nil && oldFresh.Status == metav1.ConditionTrue
+	newIsStale := newFresh != nil && newFresh.Status == metav1.ConditionFalse
+	return oldWasFresh && newIsStale
+}
+
+func (permissionSnapshotStaleFilter) Create(_ event.CreateEvent) bool  { return false }
+func (permissionSnapshotStaleFilter) Delete(_ event.DeleteEvent) bool  { return false }
+func (permissionSnapshotStaleFilter) Generic(_ event.GenericEvent) bool { return false }
+
+// SetupWithManager registers the EPGReconciler to watch seven resource types.
 //
-// Four watches use the annotation filter and map to the "epg-trigger" fixed key —
+// Five watches use the annotation filter and map to the "epg-trigger" fixed key —
 // they trigger full EPG recomputation:
 //   - RBACProfile (annotation: ontai.dev/epg-recompute-requested)
 //   - RBACPolicy
 //   - IdentityBinding
 //   - PermissionSet
+//   - PermissionSnapshot (Fresh=True → Fresh=False transition only)
 //
 // Two watches map to the "drift-check" fixed key — they trigger reconcileDrift only:
 //   - PermissionSnapshotReceipt (any create/update: agent acknowledgement arrived)
@@ -573,6 +603,10 @@ func (r *EPGReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&securityv1alpha1.IdentityBinding{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.PermissionSet{}, fixedKey, builder.WithPredicates(filter)).
 		Watches(&securityv1alpha1.IdentityProvider{}, fixedKey, builder.WithPredicates(filter)).
+		// EPG recomputation trigger on PermissionSnapshot staleness: when a snapshot
+		// transitions from Fresh=True to Fresh=False, enqueue a full recompute so the
+		// EPG is refreshed and a new snapshot is generated immediately.
+		Watches(&securityv1alpha1.PermissionSnapshot{}, fixedKey, builder.WithPredicates(permissionSnapshotStaleFilter{})).
 		// Drift-check triggers (all create/update events, no annotation filter).
 		Watches(&securityv1alpha1.PermissionSnapshotReceipt{}, driftKey).
 		Watches(&securityv1alpha1.PermissionSnapshot{}, driftKey).

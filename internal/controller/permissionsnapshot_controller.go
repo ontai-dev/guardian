@@ -133,8 +133,9 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	age := r.now().Sub(snapshotTime.Time)
 	windowDuration := time.Duration(window) * time.Second
+	isFresh := age <= windowDuration
 
-	if age <= windowDuration {
+	if isFresh {
 		securityv1alpha1.SetCondition(
 			&snapshot.Status.Conditions,
 			seamconditions.ConditionTypePermissionSnapshotFresh,
@@ -178,10 +179,14 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 		})
 	}
 
-	// Step 7 — Requeue after FreshnessWindowSeconds so a fresh snapshot is
-	// re-evaluated when it may become stale. A snapshot that is already stale is
-	// also requeued so it surfaces an event each window period.
-	return ctrl.Result{RequeueAfter: windowDuration}, nil
+	// Step 7 — Fresh snapshots requeue after the window so they are re-evaluated
+	// when they may become stale. Stale snapshots return without requeue — the
+	// EPGReconciler watches for the Fresh=False status transition and enqueues
+	// a full EPG recompute immediately.
+	if isFresh {
+		return ctrl.Result{RequeueAfter: windowDuration}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager registers PermissionSnapshotReconciler as the controller for PermissionSnapshot.

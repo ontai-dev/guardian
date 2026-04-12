@@ -163,10 +163,11 @@ func TestPermissionSnapshotReconciler_RequeuedAfterWindow(t *testing.T) {
 	}
 }
 
-// TestPermissionSnapshotReconciler_StaleSnapshotAlsoRequeued verifies that a
-// stale snapshot is also requeued after the freshness window so it continues to
-// surface staleness events periodically.
-func TestPermissionSnapshotReconciler_StaleSnapshotAlsoRequeued(t *testing.T) {
+// TestPermissionSnapshotReconciler_StaleSnapshotNoRequeue verifies that a stale
+// snapshot returns without a RequeueAfter. The EPGReconciler watches for the
+// Fresh=False status transition and triggers a full recompute — periodic
+// self-requeue from this reconciler would redundantly delay that path.
+func TestPermissionSnapshotReconciler_StaleSnapshotNoRequeue(t *testing.T) {
 	now := time.Now()
 	// 600s old, 300s window — stale.
 	snapshotTime := now.Add(-600 * time.Second)
@@ -174,9 +175,8 @@ func TestPermissionSnapshotReconciler_StaleSnapshotAlsoRequeued(t *testing.T) {
 
 	result, _ := reconcileSnapshot(t, snapshot, now)
 
-	want := 300 * time.Second
-	if result.RequeueAfter != want {
-		t.Errorf("RequeueAfter for stale snapshot: got %v; want %v", result.RequeueAfter, want)
+	if result.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter for stale snapshot: got %v; want 0 (no requeue)", result.RequeueAfter)
 	}
 }
 
