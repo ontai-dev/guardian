@@ -40,3 +40,5 @@ AGENTS.md
 *.md
 !README.md
 !*-schema.md
+ont-security
+cmd/ont-security/ont-security
