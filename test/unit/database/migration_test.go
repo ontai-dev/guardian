@@ -616,8 +616,8 @@ func TestMigrationRunner_HaltsOnFailureBeforeNextMigration(t *testing.T) {
 	}
 }
 
-// TestConnConfig_DSN verifies that DSN appends sslmode=require when absent and
-// leaves an existing sslmode parameter untouched.
+// TestConnConfig_DSN verifies DSN transformations: pooler-to-rw host rewrite and
+// sslmode=require insertion.
 func TestConnConfig_DSN(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -638,6 +638,19 @@ func TestConnConfig_DSN(t *testing.T) {
 			name:     "sslmode already present — left unchanged",
 			uri:      "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=verify-full",
 			expected: "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=verify-full",
+		},
+		{
+			// Pooler URI from CNPG app Secret: PgBouncer caches md5 hashes and
+			// causes "password authentication failed" on guardian pod restarts.
+			// DSN rewrites the host to the rw service to bypass the pooler.
+			name:     "pooler host — rewritten to rw service",
+			uri:      "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian",
+			expected: "postgresql://guardian:secret@guardian-cnpg-rw.seam-system.svc:5432/guardian?sslmode=require",
+		},
+		{
+			name:     "pooler host with existing sslmode — host rewritten, sslmode preserved",
+			uri:      "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian?sslmode=require",
+			expected: "postgresql://guardian:secret@guardian-cnpg-rw.seam-system.svc:5432/guardian?sslmode=require",
 		},
 	}
 	for _, tc := range tests {
