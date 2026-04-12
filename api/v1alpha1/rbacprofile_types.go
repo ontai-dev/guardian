@@ -91,6 +91,14 @@ type RBACProfileSpec struct {
 	// Must not be empty.
 	RBACPolicyRef string `json:"rbacPolicyRef"`
 
+	// DomainIdentityRef is the optional reference to the DomainIdentity at
+	// core.ontai.dev that this operator's service account traces to.
+	// Format: {name} — references a DomainIdentity in the domain-core.
+	// Set by compiler enable for Seam operator RBACProfiles.
+	// Required for Seam family operators. Optional for third-party components.
+	// +kubebuilder:validation:Optional
+	DomainIdentityRef string `json:"domainIdentityRef,omitempty"`
+
 	// Lineage is the sealed causal chain record for this root declaration.
 	// Authored once at object creation time and immutable thereafter.
 	// The admission webhook rejects any update that modifies this field after creation.

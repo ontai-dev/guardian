@@ -55,6 +55,14 @@ spec:
           spec:
             description: RBACProfileSpec defines the desired state of a RBACProfile.
             properties:
+              domainIdentityRef:
+                description: |-
+                  DomainIdentityRef is the optional reference to the DomainIdentity at
+                  core.ontai.dev that this operator's service account traces to.
+                  Format: {name} — references a DomainIdentity in the domain-core.
+                  Set by compiler enable for Seam operator RBACProfiles.
+                  Required for Seam family operators. Optional for third-party components.
+                type: string
               lineage:
                 description: |-
                   Lineage is the sealed causal chain record for this root declaration.

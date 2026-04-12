@@ -1,10 +1,10 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: ont-security-rbac-webhook
+  name: guardian-rbac-webhook
   annotations:
-    # cert-manager injects the CA bundle from the ont-security-webhook-cert Certificate.
-    cert-manager.io/inject-ca-from: security-system/ont-security-webhook-cert
+    # caBundle is populated at compile time by compiler enable from guardian-ca-secret.
+    ontai.dev/managed-by: compiler
 webhooks:
   - name: validate-rbac.security.ontai.dev
     admissionReviewVersions: ["v1"]
@@ -12,15 +12,15 @@ webhooks:
     # FailurePolicy: Fail — if the webhook is unreachable, admission is blocked.
     # This enforces CS-INV-001: policy without enforcement is decoration.
     failurePolicy: Fail
-    # kube-system is excluded — system components manage their own RBAC and do not
-    # carry the ontai.dev/rbac-owner annotation. All tenant and operator namespaces
-    # are subject to enforcement.
+    # Namespaces labelled seam.ontai.dev/webhook-mode=exempt are excluded —
+    # seam-system and kube-system carry this label. All other namespaces are subject
+    # to RBAC enforcement. guardian-schema.md §5.
     namespaceSelector:
       matchExpressions:
-        - key: kubernetes.io/metadata.name
+        - key: seam.ontai.dev/webhook-mode
           operator: NotIn
           values:
-            - kube-system
+            - exempt
     rules:
       - apiGroups: ["rbac.authorization.k8s.io"]
         apiVersions: ["v1"]
@@ -34,7 +34,7 @@ webhooks:
         scope: "*"
     clientConfig:
       service:
-        name: ont-security-webhook-service
-        namespace: security-system
+        name: guardian
+        namespace: seam-system
         path: /validate-rbac
         port: 443

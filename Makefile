@@ -61,7 +61,7 @@ docker-build:
 		--platform linux/amd64 \
 		-f Dockerfile \
 		-t $(IMAGE_REGISTRY)/$(IMAGE_NAME):$(TAG) \
-		.
+		..
 
 # docker-push pushes the already-built Guardian image to the registry.
 docker-push:
