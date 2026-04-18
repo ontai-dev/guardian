@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
     -o /bin/guardian \
-    ./cmd/ont-security
+    ./cmd/guardian
 
 FROM gcr.io/distroless/base:nonroot
 COPY --from=builder /bin/guardian /usr/local/bin/guardian
