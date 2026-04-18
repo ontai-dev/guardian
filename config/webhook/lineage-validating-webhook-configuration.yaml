@@ -1,0 +1,31 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: guardian-lineage-immutability-webhook
+  annotations:
+    # caBundle is populated at compile time by compiler enable from guardian-ca-secret.
+    ontai.dev/managed-by: compiler
+webhooks:
+  - name: validate-lineage.security.ontai.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # FailurePolicy: Fail — a missing lineage check is a security breach.
+    # CLAUDE.md §14 Decision 1, seam-core-schema.md §5.
+    failurePolicy: Fail
+    rules:
+      - apiGroups: ["security.ontai.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources:
+          - rbacpolicies
+          - rbacprofiles
+          - identitybindings
+          - identityproviders
+          - permissionsets
+        scope: "*"
+    clientConfig:
+      service:
+        name: guardian
+        namespace: seam-system
+        path: /validate-lineage
+        port: 443

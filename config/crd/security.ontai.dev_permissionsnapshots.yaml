@@ -1,0 +1,407 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  name: permissionsnapshots.security.ontai.dev
+spec:
+  group: security.ontai.dev
+  names:
+    kind: PermissionSnapshot
+    listKind: PermissionSnapshotList
+    plural: permissionsnapshots
+    shortNames:
+    - psn
+    singular: permissionsnapshot
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetCluster
+      name: TargetCluster
+      type: string
+    - jsonPath: .status.signed
+      name: Signed
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=='Fresh')].status
+      name: Fresh
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Compliant')].status
+      name: Compliant
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PermissionSnapshot is a computed, versioned EPG for a specific target cluster.
+          Generated on any input change by the EPGReconciler. Signed by the management
+          cluster Conductor. Never manually authored. One per target cluster, replaced
+          in-place on recomputation. guardian-schema.md §7.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PermissionSnapshotSpec defines the desired state of a PermissionSnapshot.
+              This CR is never manually authored — it is generated exclusively by the
+              EPGReconciler. guardian-schema.md §7.
+            properties:
+              freshnessWindowSeconds:
+                default: 300
+                description: |-
+                  FreshnessWindowSeconds is the window within which this snapshot is considered
+                  fresh. The PermissionSnapshotReconciler sets FreshnessCondition=Stale when the
+                  snapshot age exceeds this value. Default 300 (5 minutes).
+                format: int32
+                minimum: 1
+                type: integer
+              generatedAt:
+                description: |-
+                  GeneratedAt is the timestamp when this snapshot was generated.
+                  Retained for EPGReconciler compatibility. See also SnapshotTimestamp.
+                format: date-time
+                type: string
+              lineage:
+                description: |-
+                  Lineage is the sealed causal chain anchoring this snapshot to the root
+                  declaration (RBACPolicy or TalosCluster) that triggered its generation.
+                  Authored once at creation time and immutable thereafter.
+                  CLAUDE.md §14 Decision 1, seam-core-schema.md §5.
+                properties:
+                  creatingOperator:
+                    description: |-
+                      CreatingOperator identifies the Seam Operator that created this object.
+                      This is a structured identity carrying the operator name and its deployed
+                      version at creation time.
+                    properties:
+                      name:
+                        description: |-
+                          Name is the canonical name of the Seam Operator (e.g., platform, guardian,
+                          wrapper, conductor).
+                        type: string
+                      version:
+                        description: |-
+                          Version is the deployed version of the operator at the time the object was
+                          created (e.g., v1.26.5-r3). This allows audit tooling to correlate objects
+                          with the operator version that produced them.
+                        type: string
+                    required:
+                    - name
+                    - version
+                    type: object
+                  creationRationale:
+                    description: |-
+                      CreationRationale is the reason this object was created, drawn from the
+                      Seam Core controlled vocabulary defined in rationale.go. It is not a
+                      free-text field.
+                    enum:
+                    - ClusterProvision
+                    - ClusterDecommission
+                    - SecurityEnforcement
+                    - PackExecution
+                    - VirtualizationFulfillment
+                    - ConductorAssignment
+                    - VortexBinding
+                    type: string
+                  rootGenerationAtCreation:
+                    description: |-
+                      RootGenerationAtCreation is the metadata.generation of the root declaration
+                      at the time this object was created. Together with RootUID, it provides a
+                      complete temporal anchor for the derivation record.
+                    format: int64
+                    type: integer
+                  rootKind:
+                    description: |-
+                      RootKind is the kind of the root declaration that caused this object to
+                      exist (e.g., TalosCluster, PackExecution, RBACPolicy).
+                    type: string
+                  rootName:
+                    description: RootName is the name of the root declaration.
+                    type: string
+                  rootNamespace:
+                    description: RootNamespace is the namespace of the root declaration.
+                    type: string
+                  rootUID:
+                    description: |-
+                      RootUID is the UID of the root declaration at the time this object was
+                      created. Used to verify that no root declaration replacement has occurred.
+                    type: string
+                required:
+                - creatingOperator
+                - creationRationale
+                - rootGenerationAtCreation
+                - rootKind
+                - rootName
+                - rootNamespace
+                - rootUID
+                type: object
+              principalPermissions:
+                description: |-
+                  PrincipalPermissions is the per-principal EPG permission map.
+                  Populated by the EPGReconciler from the in-memory EPG store.
+                items:
+                  description: |-
+                    PrincipalPermissionEntry is the per-principal permission entry in a PermissionSnapshot.
+                    Retained for compatibility with the existing EPGReconciler output.
+                  properties:
+                    allowedOperations:
+                      description: AllowedOperations is the list of allowed operations
+                        for this principal.
+                      items:
+                        description: |-
+                          AllowedOperation describes a single permitted operation within the EPG.
+                          Retained for compatibility with the existing PrincipalPermissions field.
+                        properties:
+                          apiGroup:
+                            description: |-
+                              APIGroup is the Kubernetes API group this operation applies to.
+                              Empty string means the core API group.
+                            type: string
+                          clusters:
+                            description: Clusters is the list of cluster names this
+                              operation applies to.
+                            items:
+                              type: string
+                            type: array
+                          resource:
+                            description: Resource is the Kubernetes resource type.
+                            type: string
+                          verbs:
+                            description: Verbs is the list of permitted operations
+                              on the resource.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - resource
+                        - verbs
+                        type: object
+                      type: array
+                    principalRef:
+                      description: PrincipalRef is the principal name this entry governs.
+                      type: string
+                  required:
+                  - principalRef
+                  type: object
+                type: array
+              signingKeyFingerprint:
+                description: |-
+                  SigningKeyFingerprint is the fingerprint of the Ed25519 key used to sign this
+                  snapshot. Populated by the management cluster Conductor signing loop after
+                  writing the ontai.dev/snapshot-signature annotation. Consumers verify which key
+                  was used before trusting the signature.
+                type: string
+              snapshotTimestamp:
+                description: |-
+                  SnapshotTimestamp is the canonical timestamp when this snapshot was generated,
+                  used by PermissionSnapshotReconciler to evaluate FreshnessCondition.
+                format: date-time
+                type: string
+              subjects:
+                description: |-
+                  Subjects is the per-subject permission grant list for the target cluster.
+                  Each entry carries the subject identity and the full list of permission rules
+                  granted to that subject, mirroring the structure Guardian's PermissionService
+                  evaluates. Conductor filters this list to enforce RBAC on the target cluster.
+                items:
+                  description: |-
+                    SubjectEntry is the per-subject permission grant in a PermissionSnapshot.
+                    Conductor's pull loop filters these entries by SubjectKind and Namespace
+                    to enforce RBAC on the target cluster.
+                  properties:
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the subject. Empty for cluster-scoped subjects
+                        (Kind=User or Kind=Group) or cluster-wide ServiceAccount grants.
+                      type: string
+                    permissions:
+                      description: Permissions is the list of permission rules granted
+                        to this subject.
+                      items:
+                        description: |-
+                          PermissionEntry describes a single permission rule within a subject's grant.
+                          It mirrors the structure Guardian's PermissionService already evaluates.
+                        properties:
+                          apiGroups:
+                            description: |-
+                              APIGroups is the list of API groups the rule applies to.
+                              Empty string "" refers to the core API group.
+                            items:
+                              type: string
+                            type: array
+                          resourceNames:
+                            description: |-
+                              ResourceNames is an optional list restricting the rule to named resource instances only.
+                              Empty means the rule applies to all instances.
+                            items:
+                              type: string
+                            type: array
+                          resources:
+                            description: Resources is the list of Kubernetes resource
+                              types the rule applies to.
+                            items:
+                              type: string
+                            type: array
+                          verbs:
+                            description: Verbs is the list of permitted operations
+                              (get, list, watch, create, update, patch, delete, deletecollection).
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - resources
+                        - verbs
+                        type: object
+                      type: array
+                    subjectKind:
+                      description: SubjectKind identifies the kind of subject.
+                      enum:
+                      - ServiceAccount
+                      - User
+                      - Group
+                      type: string
+                    subjectName:
+                      description: SubjectName is the name of the subject (ServiceAccount
+                        name, username, or group name).
+                      type: string
+                  required:
+                  - subjectKind
+                  - subjectName
+                  type: object
+                type: array
+              targetCluster:
+                description: |-
+                  TargetCluster is the cluster name this snapshot governs. Used by Conductor's
+                  pull loop to filter snapshots scoped to its own cluster.
+                type: string
+              version:
+                description: |-
+                  Version is the monotonically increasing version string.
+                  Format: ISO8601 timestamp at generation time, e.g. "2026-03-30T12:00:00Z".
+                type: string
+            required:
+            - generatedAt
+            - targetCluster
+            - version
+            type: object
+          status:
+            description: PermissionSnapshotStatus defines the observed state of a
+              PermissionSnapshot.
+            properties:
+              conditions:
+                description: |-
+                  Conditions is the list of standard metav1 conditions on this snapshot.
+                  Managed by PermissionSnapshotReconciler.
+                  Includes: LineageSynced, Fresh, Compliant.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              drift:
+                description: |-
+                  Drift is true when LastAckedVersion != ExpectedVersion.
+                  Deprecated: prefer DriftDetected which is set by the drift detection loop.
+                type: boolean
+              driftDetected:
+                description: |-
+                  DriftDetected is set by Guardian's drift detection loop on the management cluster
+                  when the observed RBAC surface on the target cluster diverges from the snapshot
+                  content. Mirrors the Compliant condition in boolean form.
+                type: boolean
+              expectedVersion:
+                description: ExpectedVersion is the version the management cluster
+                  expects agents to acknowledge.
+                type: string
+              lastAckedVersion:
+                description: LastAckedVersion is the version last acknowledged by
+                  the target cluster agent.
+                type: string
+              lastSeen:
+                description: LastSeen is the timestamp of the most recent agent acknowledgement.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation of the PermissionSnapshot
+                  spec last reconciled.
+                format: int64
+                type: integer
+              signed:
+                description: |-
+                  Signed is true when the management cluster Conductor signing loop has written
+                  the ontai.dev/snapshot-signature annotation on this object. INV-026.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
