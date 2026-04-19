@@ -178,7 +178,9 @@ type PermissionSnapshotStatus struct {
 
 	// Conditions is the list of standard metav1 conditions on this snapshot.
 	// Managed by PermissionSnapshotReconciler.
-	// Includes: LineageSynced, Fresh, Compliant.
+	// Includes: Fresh, Compliant. LineageSynced is not set on PermissionSnapshot --
+	// it is a derived object, not a root declaration, and is not watched by the
+	// InfrastructureLineageController.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
