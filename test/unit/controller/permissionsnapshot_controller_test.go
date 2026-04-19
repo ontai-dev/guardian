@@ -77,26 +77,19 @@ func reconcileSnapshot(
 	return result, got
 }
 
-// TestPermissionSnapshotReconciler_LineageSyncedInitialized verifies that on first
-// observation the reconciler writes LineageSynced=False with reason
-// LineageControllerAbsent, following the established pattern across all root
-// declaration CRDs. seam-core-schema.md §7 Declaration 5.
-func TestPermissionSnapshotReconciler_LineageSyncedInitialized(t *testing.T) {
+// TestPermissionSnapshotReconciler_LineageSyncedAbsent is the permanent regression
+// guard for SEAM-CORE-BL-LINEAGE. PermissionSnapshot is a derived object, not a
+// root declaration. The InfrastructureLineageController does not watch it.
+// PermissionSnapshotReconciler must never write a LineageSynced condition.
+func TestPermissionSnapshotReconciler_LineageSyncedAbsent(t *testing.T) {
 	now := time.Now()
-	snapshot := minimalSnapshot("ps-lineage-init", "security-system", now, 300)
+	snapshot := minimalSnapshot("ps-lineage-absent", "security-system", now, 300)
 
 	_, got := reconcileSnapshot(t, snapshot, now)
 
 	c := securityv1alpha1.FindCondition(got.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced)
-	if c == nil {
-		t.Fatal("LineageSynced condition absent after first reconcile")
-	}
-	if c.Status != metav1.ConditionFalse {
-		t.Errorf("LineageSynced status: got %v; want False", c.Status)
-	}
-	if c.Reason != securityv1alpha1.ReasonLineageControllerAbsent {
-		t.Errorf("LineageSynced reason: got %q; want %q",
-			c.Reason, securityv1alpha1.ReasonLineageControllerAbsent)
+	if c != nil {
+		t.Errorf("LineageSynced condition must not be set on PermissionSnapshot by PermissionSnapshotReconciler; got status=%v reason=%q", c.Status, c.Reason)
 	}
 }
 
@@ -180,56 +173,3 @@ func TestPermissionSnapshotReconciler_StaleSnapshotNoRequeue(t *testing.T) {
 	}
 }
 
-// TestPermissionSnapshotReconciler_LineageSyncedNotOverwrittenOnReconcile verifies
-// the one-time write invariant: the reconciler does not overwrite LineageSynced
-// if it is already present. This prevents spurious status patches when the
-// InfrastructureLineageController has already set it to True.
-// seam-core-schema.md §7 Declaration 5.
-func TestPermissionSnapshotReconciler_LineageSyncedNotOverwrittenOnReconcile(t *testing.T) {
-	now := time.Now()
-	snapshot := minimalSnapshot("ps-lineage-noop", "security-system", now, 300)
-
-	// Pre-populate LineageSynced=True as if InfrastructureLineageController already set it.
-	snapshot.Status.Conditions = []metav1.Condition{
-		{
-			Type:               securityv1alpha1.ConditionTypeLineageSynced,
-			Status:             metav1.ConditionTrue,
-			Reason:             "LineageSynced",
-			Message:            "Lineage controller synced.",
-			LastTransitionTime: metav1.Now(),
-			ObservedGeneration: 1,
-		},
-	}
-
-	s := buildGuardianScheme()
-	cl := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(snapshot).
-		WithStatusSubresource(snapshot).
-		Build()
-
-	r := &controller.PermissionSnapshotReconciler{
-		Client:   cl,
-		Scheme:   s,
-		Recorder: record.NewFakeRecorder(16),
-		Now:      func() time.Time { return now },
-	}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: snapshot.Name, Namespace: snapshot.Namespace},
-	}); err != nil {
-		t.Fatalf("Reconcile error: %v", err)
-	}
-
-	got := &securityv1alpha1.PermissionSnapshot{}
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: snapshot.Name, Namespace: snapshot.Namespace}, got); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-
-	c := securityv1alpha1.FindCondition(got.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced)
-	if c == nil {
-		t.Fatal("LineageSynced condition absent after second reconcile")
-	}
-	if c.Status != metav1.ConditionTrue {
-		t.Errorf("LineageSynced was overwritten to %v; expected True to be preserved", c.Status)
-	}
-}

@@ -23,11 +23,14 @@ import (
 const defaultFreshnessWindowSeconds = 300
 
 // PermissionSnapshotReconciler watches PermissionSnapshot CRs and:
-//  1. Initialises the LineageSynced condition to False on first observation.
-//  2. Evaluates freshness: compares the current time against spec.SnapshotTimestamp
+//  1. Evaluates freshness: compares the current time against spec.SnapshotTimestamp
 //     relative to spec.FreshnessWindowSeconds and sets the Fresh condition accordingly.
-//  3. Requeues after FreshnessWindowSeconds so a snapshot that was fresh on last
+//  2. Requeues after FreshnessWindowSeconds so a snapshot that was fresh on last
 //     reconcile is re-evaluated when it may become stale.
+//
+// PermissionSnapshot is a derived object, not a root declaration. It is not watched
+// by the InfrastructureLineageController and does not carry a LineageSynced condition.
+// SEAM-CORE-BL-LINEAGE: the erroneous LineageSynced initialization was removed.
 //
 // This reconciler runs under both role=management and role=tenant — both roles need
 // freshness tracking. guardian-schema.md §7, §15.
@@ -95,21 +98,7 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Step 3 — Advance ObservedGeneration.
 	snapshot.Status.ObservedGeneration = snapshot.Generation
 
-	// Step 4 — Initialize LineageSynced on first observation.
-	// One-time write only. InfrastructureLineageController takes ownership when deployed.
-	// seam-core-schema.md §7 Declaration 5.
-	if securityv1alpha1.FindCondition(snapshot.Status.Conditions, securityv1alpha1.ConditionTypeLineageSynced) == nil {
-		securityv1alpha1.SetCondition(
-			&snapshot.Status.Conditions,
-			securityv1alpha1.ConditionTypeLineageSynced,
-			metav1.ConditionFalse,
-			securityv1alpha1.ReasonLineageControllerAbsent,
-			"InfrastructureLineageController is not yet deployed.",
-			snapshot.Generation,
-		)
-	}
-
-	// Step 5 — Evaluate FreshnessCondition.
+	// Step 4 — Evaluate FreshnessCondition.
 	// Use SnapshotTimestamp if set; fall back to GeneratedAt (EPGReconciler compat).
 	var snapshotTime *metav1.Time
 	if snapshot.Spec.SnapshotTimestamp != nil {
@@ -164,7 +153,7 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"age", age, "window", windowDuration)
 	}
 
-	// Step 6 — Emit a drift audit event if the snapshot is currently drifted.
+	// Step 5 — Emit a drift audit event if the snapshot is currently drifted.
 	// The EPGReconciler drift loop emits on transitions; this provides a periodic
 	// audit trail for snapshots that remain drifted across multiple requeue cycles.
 	if snapshot.Status.Drift {
@@ -179,7 +168,7 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 		})
 	}
 
-	// Step 7 — Fresh snapshots requeue after the window so they are re-evaluated
+	// Step 6 — Fresh snapshots requeue after the window so they are re-evaluated
 	// when they may become stale. Stale snapshots return without requeue — the
 	// EPGReconciler watches for the Fresh=False status transition and enqueues
 	// a full EPG recompute immediately.
