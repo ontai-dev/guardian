@@ -205,3 +205,83 @@ func TestEPGReconciler_PermissionSnapshotConformsToFormalSchema(t *testing.T) {
 		t.Errorf("principal %q not found in spec.subjects; EPG computation must include it", principal)
 	}
 }
+
+// TestEPGReconciler_ManagementClusterSnapshotAlias verifies G-BL-SNAPSHOT-ALIAS:
+// when ManagementClusterName is set and the target cluster matches, the
+// PermissionSnapshot is named "snapshot-management" instead of "snapshot-{cluster}".
+func TestEPGReconciler_ManagementClusterSnapshotAlias(t *testing.T) {
+	const (
+		ns          = "security-system"
+		mgmtCluster = "ccs-mgmt"
+		psName      = "ps-alias-test"
+		policyName  = "policy-alias-test"
+	)
+
+	permSet := &securityv1alpha1.PermissionSet{
+		ObjectMeta: metav1.ObjectMeta{Name: psName, Namespace: ns},
+		Spec: securityv1alpha1.PermissionSetSpec{
+			Permissions: []securityv1alpha1.PermissionRule{
+				{Resources: []string{"pods"}, Verbs: []securityv1alpha1.Verb{securityv1alpha1.VerbGet}},
+			},
+		},
+	}
+	policy := &securityv1alpha1.RBACPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: policyName, Namespace: ns},
+		Spec: securityv1alpha1.RBACPolicySpec{
+			SubjectScope:            securityv1alpha1.SubjectScopeTenant,
+			EnforcementMode:         securityv1alpha1.EnforcementModeStrict,
+			AllowedClusters:         []string{mgmtCluster},
+			MaximumPermissionSetRef: psName,
+		},
+	}
+	profile := &securityv1alpha1.RBACProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "profile-mgmt", Namespace: ns},
+		Spec: securityv1alpha1.RBACProfileSpec{
+			PrincipalRef:   "mgmt-user",
+			RBACPolicyRef:  policyName,
+			TargetClusters: []string{mgmtCluster},
+			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
+				{PermissionSetRef: psName, Scope: securityv1alpha1.PermissionScopeCluster},
+			},
+		},
+		Status: securityv1alpha1.RBACProfileStatus{Provisioned: true},
+	}
+
+	s := buildGuardianScheme()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(permSet, policy, profile).
+		WithStatusSubresource(profile, &securityv1alpha1.PermissionSnapshot{}).
+		Build()
+
+	r := &controller.EPGReconciler{
+		Client:                cl,
+		Scheme:                s,
+		Recorder:              record.NewFakeRecorder(16),
+		OperatorNamespace:     ns,
+		ManagementClusterName: mgmtCluster,
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "epg-trigger", Namespace: ns},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	// The snapshot must be named "snapshot-management", not "snapshot-ccs-mgmt".
+	var snapList securityv1alpha1.PermissionSnapshotList
+	if err := cl.List(context.Background(), &snapList, client.InNamespace(ns)); err != nil {
+		t.Fatalf("List PermissionSnapshots: %v", err)
+	}
+	if len(snapList.Items) == 0 {
+		t.Fatal("no PermissionSnapshot created")
+	}
+	snap := &snapList.Items[0]
+	if snap.Name != "snapshot-management" {
+		t.Errorf("snapshot name: got %q; want %q", snap.Name, "snapshot-management")
+	}
+	if snap.Spec.TargetCluster != mgmtCluster {
+		t.Errorf("spec.targetCluster: got %q; want %q", snap.Spec.TargetCluster, mgmtCluster)
+	}
+}

@@ -86,6 +86,14 @@ type EPGReconciler struct {
 	// controller startup. Defaults to 300 (5 minutes) if absent or invalid.
 	FreshnessWindowSeconds int64
 
+	// ManagementClusterName is the name of the management cluster, e.g. "ccs-mgmt".
+	// When a PermissionSnapshot is first created for this cluster and no existing
+	// snapshot exists, the canonical name "snapshot-management" is used instead of
+	// the default "snapshot-{cluster}". This eliminates the redundant snapshot-ccs-mgmt
+	// object and aligns with the SeamMembership controller's hardcoded reference.
+	// Read from MANAGEMENT_CLUSTER_NAME env var. Empty string disables the alias.
+	ManagementClusterName string
+
 	// AuditWriter receives operational audit events from this reconciler.
 	// Nil is safe — events are silently dropped when no writer is configured.
 	AuditWriter database.AuditWriter
@@ -238,7 +246,11 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var upsertedSnapshots []*securityv1alpha1.PermissionSnapshot
 	for _, cluster := range result.TargetClusters {
-		snapshot := epg.BuildPermissionSnapshot(result, cluster, r.OperatorNamespace, existingByCluster[cluster])
+		existingName := existingByCluster[cluster]
+		if existingName == "" {
+			existingName = r.snapshotNameForCluster(cluster)
+		}
+		snapshot := epg.BuildPermissionSnapshot(result, cluster, r.OperatorNamespace, existingName)
 
 		// Propagate the configured freshness window so the PermissionSnapshot
 		// controller uses the operator-configured value rather than its internal
@@ -579,6 +591,17 @@ func (permissionSnapshotStaleFilter) Create(e event.CreateEvent) bool {
 }
 func (permissionSnapshotStaleFilter) Delete(_ event.DeleteEvent) bool  { return false }
 func (permissionSnapshotStaleFilter) Generic(_ event.GenericEvent) bool { return false }
+
+// snapshotNameForCluster returns the canonical PermissionSnapshot object name for the
+// given target cluster. The management cluster (ManagementClusterName) maps to
+// "snapshot-management" so it aligns with the SeamMembership controller reference.
+// All other clusters map to "snapshot-{cluster}". G-BL-SNAPSHOT-ALIAS.
+func (r *EPGReconciler) snapshotNameForCluster(cluster string) string {
+	if r.ManagementClusterName != "" && cluster == r.ManagementClusterName {
+		return "snapshot-management"
+	}
+	return fmt.Sprintf("snapshot-%s", cluster)
+}
 
 // SetupWithManager registers the EPGReconciler to watch seven resource types.
 //

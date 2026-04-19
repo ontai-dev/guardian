@@ -193,7 +193,7 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, auditWriter, operatorNamespace, freshnessWindow, clusterID, mgmtDynClient); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, auditWriter, operatorNamespace, freshnessWindow, clusterID, mgmtDynClient, managementClusterName); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -450,10 +450,10 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64, clusterID string, mgmtDynClient dynamic.Interface) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64, clusterID string, mgmtDynClient dynamic.Interface, managementClusterName string) error {
 	switch r {
 	case role.RoleManagement:
-		return setupManagementControllers(mgr, epgStore, auditDB, aw, operatorNamespace, freshnessWindow)
+		return setupManagementControllers(mgr, epgStore, auditDB, aw, operatorNamespace, freshnessWindow, managementClusterName)
 	case role.RoleTenant:
 		return setupTenantControllers(mgr, clusterID, operatorNamespace, mgmtDynClient, aw)
 	default:
@@ -464,7 +464,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 
 // setupManagementControllers registers controllers that run only when role=management.
 // guardian-schema.md §15, §18, §19.
-func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
+func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64, managementClusterName string) error {
 	// ClusterRBACPolicyReconciler: provisions cluster-level RBACPolicy and PermissionSet
 	// for each InfrastructureTalosCluster and cascades deletion. guardian-schema.md §18.
 	if err := (&controller.ClusterRBACPolicyReconciler{
@@ -489,6 +489,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 		Store:                  epgStore,
 		OperatorNamespace:      operatorNamespace,
 		FreshnessWindowSeconds: freshnessWindow,
+		ManagementClusterName:  managementClusterName,
 		AuditWriter:            aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
