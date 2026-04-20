@@ -9,7 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -33,7 +33,7 @@ type IdentityBindingReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 }
 
 // Reconcile is the main reconciliation loop for IdentityBinding.
@@ -115,7 +115,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			binding.Generation,
 		)
 
-		r.Recorder.Event(binding, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("IdentityBinding validation failed",
 			"name", binding.Name, "namespace", binding.Namespace)
 
@@ -161,7 +161,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				binding.Generation,
 			)
 
-			r.Recorder.Event(binding, corev1.EventTypeWarning, "TrustAnchorUnresolved", trust.Message)
+			r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "TrustAnchorUnresolved", "TrustAnchorUnresolved", trust.Message)
 			logger.Info("IdentityBinding trust anchor unresolved",
 				"name", binding.Name, "namespace", binding.Namespace,
 				"reason", trust.Reason, "message", trust.Message)
@@ -193,7 +193,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		binding.Generation,
 	)
 
-	r.Recorder.Event(binding, corev1.EventTypeNormal, "ValidationPassed",
+	r.Recorder.Eventf(binding, nil, corev1.EventTypeNormal, "ValidationPassed", "ValidationPassed",
 		"IdentityBinding validated successfully.")
 
 	logger.Info("IdentityBinding validated",

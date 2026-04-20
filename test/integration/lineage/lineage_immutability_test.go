@@ -157,6 +157,9 @@ func waitForLineageWebhookActive() {
 			Namespace: ns,
 		},
 		Spec: securityv1alpha1.PermissionSetSpec{
+			Permissions: []securityv1alpha1.PermissionRule{
+				{Resources: []string{"configmaps"}, Verbs: []securityv1alpha1.Verb{"get"}},
+			},
 			Lineage: &seamcorev1alpha1lineage.SealedCausalChain{
 				RootKind:      "TestRoot",
 				RootName:      "probe-root",

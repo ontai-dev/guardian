@@ -18,60 +18,6 @@ import (
 	"github.com/ontai-dev/guardian/internal/database"
 )
 
-// mockDB implements database.DB using in-memory maps.
-type mockDB struct {
-	// appliedMigrations tracks which migration IDs have been recorded.
-	appliedMigrations map[int]bool
-
-	// execStatements records all SQL statements passed to ExecContext.
-	execStatements []string
-
-	// pingErr is returned by PingContext; nil means success.
-	pingErr error
-
-	// execErr is returned by ExecContext when set; nil means success.
-	execErr error
-}
-
-func newMockDB() *mockDB {
-	return &mockDB{appliedMigrations: make(map[int]bool)}
-}
-
-func (m *mockDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	// Simulate COUNT(*) for schema_migrations existence check and migration applied check.
-	// We can't return a real *sql.Row without a real database driver.
-	// Use a thin wrapper approach: embed the answer in the mock.
-	//
-	// Since *sql.Row cannot be constructed without a driver, we use a workaround:
-	// return a row that reads count=1 for known migrations, 0 otherwise.
-	// This is done via a small SQLite/in-process trick but we don't have SQLite here.
-	//
-	// Instead, we implement QueryRowContext to handle the two query patterns used
-	// by MigrationRunner by returning a specially-constructed *sql.Row.
-	// The cleanest approach: return a *sql.Row from a real in-memory store.
-	// We'll use database/sql with a test driver registered below.
-	panic("use mockDBWithDriver instead of mockDB for MigrationRunner tests")
-}
-
-func (m *mockDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if m.execErr != nil {
-		return nil, m.execErr
-	}
-	m.execStatements = append(m.execStatements, query)
-
-	// Track migration recording: INSERT INTO schema_migrations with an id arg.
-	if strings.Contains(query, "INSERT INTO schema_migrations") && len(args) > 0 {
-		if id, ok := args[0].(int); ok {
-			m.appliedMigrations[id] = true
-		}
-	}
-	return mockResult{}, nil
-}
-
-func (m *mockDB) PingContext(ctx context.Context) error {
-	return m.pingErr
-}
-
 type mockResult struct{}
 
 func (mockResult) LastInsertId() (int64, error) { return 0, nil }
@@ -167,18 +113,6 @@ func (s *stubDB) ExecContext(ctx context.Context, query string, args ...any) (sq
 
 func (s *stubDB) PingContext(ctx context.Context) error { return nil }
 
-// execQueriesContaining returns the subset of ExecContext calls whose SQL
-// contains any of the given substrings.
-func (s *stubDB) execQueriesContaining(substr string) []string {
-	var out []string
-	for _, ec := range s.execCalls {
-		if strings.Contains(ec.query, substr) {
-			out = append(out, ec.query)
-		}
-	}
-	return out
-}
-
 // ── Fake row for QueryRowContext ──────────────────────────────────────────────
 
 // fakeRow implements the Row.Scan contract by encoding a pre-computed integer.
@@ -206,7 +140,9 @@ type fakeDriver struct{}
 func (f *fakeDriver) Open(name string) (driver.Conn, error) {
 	// Parse "count=N" from name.
 	var count int
-	fmt.Sscanf(name, "count=%d", &count)
+	if _, err := fmt.Sscanf(name, "count=%d", &count); err != nil {
+		return nil, fmt.Errorf("fakeDriver: parse count: %w", err)
+	}
 	return &fakeConn{count: count}, nil
 }
 

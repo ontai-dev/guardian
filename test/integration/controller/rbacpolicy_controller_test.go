@@ -13,6 +13,8 @@ package controller_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,6 +36,15 @@ import (
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/controller"
 )
+
+// failFastHTTPClient returns an error immediately for all requests.
+// Injected into IdentityProviderReconciler so the OIDC reachability check
+// (which has a 10s timeout) does not race against the test poll timeout.
+type failFastHTTPClient struct{}
+
+func (f *failFastHTTPClient) Do(_ *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unreachable: no OIDC server in test environment")
+}
 
 var (
 	cfg       *rest.Config
@@ -79,42 +90,43 @@ func TestMain(m *testing.M) {
 	if err := (&controller.RBACPolicyReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
+		Recorder: mgr.GetEventRecorder("rbacpolicy-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register RBACPolicyReconciler: " + err.Error())
 	}
 	if err := (&controller.RBACProfileReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+		Recorder: mgr.GetEventRecorder("rbacprofile-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register RBACProfileReconciler: " + err.Error())
 	}
 	if err := (&controller.IdentityBindingReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+		Recorder: mgr.GetEventRecorder("identitybinding-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register IdentityBindingReconciler: " + err.Error())
 	}
 	if err := (&controller.IdentityProviderReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identityprovider-controller"),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorder("identityprovider-controller"),
+		HTTPClient: &failFastHTTPClient{},
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register IdentityProviderReconciler: " + err.Error())
 	}
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("permissionset-controller"),
+		Recorder: mgr.GetEventRecorder("permissionset-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register PermissionSetReconciler: " + err.Error())
 	}
 	if err := (&controller.EPGReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("epg-controller"),
+		Recorder: mgr.GetEventRecorder("epg-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register EPGReconciler: " + err.Error())
 	}

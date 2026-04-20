@@ -3,7 +3,6 @@ package epg
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
@@ -186,7 +185,3 @@ func deduplicateAndSort(rules []EffectiveRule) []EffectiveRule {
 	return result
 }
 
-// clusterListString formats a sorted list of cluster names for log messages.
-func clusterListString(clusters []string) string {
-	return strings.Join(clusters, ", ")
-}

@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
@@ -305,7 +305,7 @@ func buildBootstrapReconcilerWithSweep(
 	return &controller.BootstrapController{
 		Client:            c,
 		Scheme:            s,
-		Recorder:          record.NewFakeRecorder(32),
+		Recorder:          clientevents.NewFakeRecorder(32),
 		Gate:              gate,
 		Registry:          registry,
 		OperatorNamespace: controller.GuardianSingletonNamespace,

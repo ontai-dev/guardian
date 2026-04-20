@@ -195,7 +195,7 @@ func main() {
 	if err := (&controller.BootstrapController{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("bootstrap-controller"),
+		Recorder:          mgr.GetEventRecorder("bootstrap-controller"),
 		Gate:              modeGate,
 		Registry:          enforcementRegistry,
 		OperatorNamespace: operatorNamespace,
@@ -322,7 +322,7 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.RBACPolicyReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("rbacpolicy-controller"),
+		Recorder:    mgr.GetEventRecorder("rbacpolicy-controller"),
 		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
@@ -331,7 +331,7 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.RBACProfileReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("rbacprofile-controller"),
+		Recorder:    mgr.GetEventRecorder("rbacprofile-controller"),
 		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
@@ -340,7 +340,7 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.IdentityBindingReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+		Recorder: mgr.GetEventRecorder("identitybinding-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.IdentityProviderReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identityprovider-controller"),
+		Recorder: mgr.GetEventRecorder("identityprovider-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -358,7 +358,7 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 	if err := (&controller.PermissionSnapshotReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("permissionsnapshot-controller"),
+		Recorder:    mgr.GetEventRecorder("permissionsnapshot-controller"),
 		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
 		return err
@@ -397,7 +397,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("permissionset-controller"),
+		Recorder: mgr.GetEventRecorder("permissionset-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -405,7 +405,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	if err := (&controller.EPGReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
-		Recorder:               mgr.GetEventRecorderFor("epg-controller"),
+		Recorder:               mgr.GetEventRecorder("epg-controller"),
 		Store:                  epgStore,
 		OperatorNamespace:      operatorNamespace,
 		FreshnessWindowSeconds: freshnessWindow,
@@ -422,7 +422,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	if err := (&controller.AuditSinkReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("auditsink-controller"),
+		Recorder:    mgr.GetEventRecorder("auditsink-controller"),
 		DB:          auditDB,
 		AuditWriter: aw,
 	}).SetupWithManager(mgr); err != nil {
@@ -442,7 +442,7 @@ func setupTenantControllers(mgr ctrl.Manager) error {
 	if err := (&controller.AuditForwarderController{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("auditforwarder-controller"),
+		Recorder:  mgr.GetEventRecorder("auditforwarder-controller"),
 		EventCh:   auditCh,
 		ClusterID: clusterID,
 	}).SetupWithManager(mgr); err != nil {

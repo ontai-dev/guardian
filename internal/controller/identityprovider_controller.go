@@ -11,7 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -58,7 +58,7 @@ type IdentityProviderReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// HTTPClient is used for OIDC discovery document reachability checks.
 	// If nil, http.DefaultClient is used. Inject a test double in tests.
@@ -132,7 +132,7 @@ func (r *IdentityProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			provider.Generation,
 		)
 
-		r.Recorder.Event(provider, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("IdentityProvider validation failed",
 			"name", provider.Name, "namespace", provider.Namespace, "reasons", joinedReasons)
 
@@ -171,13 +171,13 @@ func (r *IdentityProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				reason,
 				provider.Generation,
 			)
-			r.Recorder.Event(provider, corev1.EventTypeWarning, "Unreachable", reason)
+			r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "Unreachable", "Unreachable", reason)
 			logger.Info("IdentityProvider OIDC issuer unreachable",
 				"name", provider.Name, "issuerURL", provider.Spec.IssuerURL, "reason", reason)
 		}
 	}
 
-	r.Recorder.Event(provider, corev1.EventTypeNormal, "Validated",
+	r.Recorder.Eventf(provider, nil, corev1.EventTypeNormal, "Validated", "Validated",
 		"IdentityProvider validated successfully.")
 	logger.Info("IdentityProvider validated",
 		"name", provider.Name, "namespace", provider.Namespace, "type", provider.Spec.Type)

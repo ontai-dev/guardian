@@ -11,7 +11,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
+	rbacv1apply "k8s.io/client-go/applyconfigurations/rbac/v1"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,7 +49,7 @@ type RBACProfileReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// AuditWriter receives operational audit events from this reconciler.
 	// Nil is safe — events are silently dropped when no writer is configured.
@@ -153,7 +155,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			profile.Generation,
 		)
 
-		r.Recorder.Event(profile, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("RBACProfile validation failed",
 			"name", profile.Name, "namespace", profile.Namespace,
 			"failedChecks", validationResult.FailedChecks)
@@ -194,8 +196,8 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				fmt.Sprintf("RBACPolicy %q not found in namespace %q.", profile.Spec.RBACPolicyRef, profile.Namespace),
 				profile.Generation,
 			)
-			r.Recorder.Event(profile, corev1.EventTypeWarning, "PolicyNotFound",
-				fmt.Sprintf("Governing RBACPolicy %q not found.", profile.Spec.RBACPolicyRef))
+			r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "PolicyNotFound",
+				"Governing RBACPolicy %q not found.", profile.Spec.RBACPolicyRef)
 			return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get RBACPolicy %s: %w", policyKey, err)
@@ -248,7 +250,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			msg,
 			profile.Generation,
 		)
-		r.Recorder.Event(profile, corev1.EventTypeWarning, "PermissionSetMissing", msg)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PermissionSetMissing", "PermissionSetMissing", msg)
 		return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
 	}
 
@@ -281,7 +283,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			joinedViolations,
 			profile.Generation,
 		)
-		r.Recorder.Event(profile, corev1.EventTypeWarning, "PolicyViolation", joinedViolations)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyViolation", "PolicyViolation", joinedViolations)
 		logger.Info("RBACProfile compliance check failed",
 			"name", profile.Name, "namespace", profile.Namespace,
 			"violations", hardViolations)
@@ -322,7 +324,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		profile.Generation,
 	)
 
-	r.Recorder.Event(profile, corev1.EventTypeNormal, "ProvisioningComplete",
+	r.Recorder.Eventf(profile, nil, corev1.EventTypeNormal, "ProvisioningComplete", "ProvisioningComplete",
 		"RBACProfile provisioned successfully.")
 
 	logger.Info("RBACProfile provisioned",
@@ -355,7 +357,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			err.Error(),
 			profile.Generation,
 		)
-		r.Recorder.Event(profile, corev1.EventTypeWarning, "RBACMaterializationFailed", err.Error())
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "RBACMaterializationFailed", "RBACMaterializationFailed", err.Error())
 		logger.Error(err, "Step J: RBAC resource provisioning failed",
 			"name", profile.Name, "namespace", profile.Namespace)
 		return ctrl.Result{}, err
@@ -432,14 +434,14 @@ func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, prof
 
 	// ServiceAccount.
 	sa := buildServiceAccount(saName, ns)
-	if err := r.Client.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+	if err := r.Client.Apply(ctx, sa, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
 		return fmt.Errorf("apply ServiceAccount %s/%s: %w", ns, saName, err)
 	}
 
 	// ClusterRole.
 	clusterRoleName := "seam:" + saName
 	cr := buildClusterRole(clusterRoleName, rules)
-	if err := r.Client.Patch(ctx, cr, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+	if err := r.Client.Apply(ctx, cr, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
 		return fmt.Errorf("apply ClusterRole %s: %w", clusterRoleName, err)
 	}
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
@@ -454,7 +456,7 @@ func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, prof
 
 	// ClusterRoleBinding.
 	crb := buildClusterRoleBinding(clusterRoleName, saName, ns)
-	if err := r.Client.Patch(ctx, crb, client.Apply, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
+	if err := r.Client.Apply(ctx, crb, client.ForceOwnership, client.FieldOwner(rbacFieldOwner)); err != nil {
 		return fmt.Errorf("apply ClusterRoleBinding %s: %w", clusterRoleName, err)
 	}
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
@@ -513,73 +515,43 @@ func parsePrincipalRef(principalRef string) (namespace, name string, ok bool) {
 	return rest[:idx], rest[idx+1:], true
 }
 
-// buildServiceAccount constructs a ServiceAccount for server-side apply.
-func buildServiceAccount(name, namespace string) *corev1.ServiceAccount {
-	return &corev1.ServiceAccount{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ServiceAccount",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Annotations: map[string]string{
-				"ontai.dev/rbac-owner": "guardian",
-			},
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "guardian",
-			},
-		},
-	}
+// buildServiceAccount constructs a ServiceAccount apply configuration for server-side apply.
+func buildServiceAccount(name, namespace string) *corev1apply.ServiceAccountApplyConfiguration {
+	return corev1apply.ServiceAccount(name, namespace).
+		WithAnnotations(map[string]string{"ontai.dev/rbac-owner": "guardian"}).
+		WithLabels(map[string]string{"app.kubernetes.io/managed-by": "guardian"})
 }
 
-// buildClusterRole constructs a ClusterRole for server-side apply.
-func buildClusterRole(name string, rules []rbacv1.PolicyRule) *rbacv1.ClusterRole {
-	return &rbacv1.ClusterRole{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
-			Kind:       "ClusterRole",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Annotations: map[string]string{
-				"ontai.dev/rbac-owner": "guardian",
-			},
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "guardian",
-			},
-		},
-		Rules: rules,
+// buildClusterRole constructs a ClusterRole apply configuration for server-side apply.
+func buildClusterRole(name string, rules []rbacv1.PolicyRule) *rbacv1apply.ClusterRoleApplyConfiguration {
+	applyRules := make([]*rbacv1apply.PolicyRuleApplyConfiguration, len(rules))
+	for i, rule := range rules {
+		ar := rbacv1apply.PolicyRule().
+			WithAPIGroups(rule.APIGroups...).
+			WithResources(rule.Resources...).
+			WithVerbs(rule.Verbs...)
+		if len(rule.ResourceNames) > 0 {
+			ar = ar.WithResourceNames(rule.ResourceNames...)
+		}
+		applyRules[i] = ar
 	}
+	return rbacv1apply.ClusterRole(name).
+		WithAnnotations(map[string]string{"ontai.dev/rbac-owner": "guardian"}).
+		WithLabels(map[string]string{"app.kubernetes.io/managed-by": "guardian"}).
+		WithRules(applyRules...)
 }
 
-// buildClusterRoleBinding constructs a ClusterRoleBinding for server-side apply.
-func buildClusterRoleBinding(name, saName, saNamespace string) *rbacv1.ClusterRoleBinding {
-	return &rbacv1.ClusterRoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
-			Kind:       "ClusterRoleBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Annotations: map[string]string{
-				"ontai.dev/rbac-owner": "guardian",
-			},
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "guardian",
-			},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     name,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      saName,
-				Namespace: saNamespace,
-			},
-		},
-	}
+// buildClusterRoleBinding constructs a ClusterRoleBinding apply configuration for server-side apply.
+func buildClusterRoleBinding(name, saName, saNamespace string) *rbacv1apply.ClusterRoleBindingApplyConfiguration {
+	return rbacv1apply.ClusterRoleBinding(name).
+		WithAnnotations(map[string]string{"ontai.dev/rbac-owner": "guardian"}).
+		WithLabels(map[string]string{"app.kubernetes.io/managed-by": "guardian"}).
+		WithRoleRef(rbacv1apply.RoleRef().
+			WithAPIGroup("rbac.authorization.k8s.io").
+			WithKind("ClusterRole").
+			WithName(name)).
+		WithSubjects(rbacv1apply.Subject().
+			WithKind("ServiceAccount").
+			WithName(saName).
+			WithNamespace(saNamespace))
 }

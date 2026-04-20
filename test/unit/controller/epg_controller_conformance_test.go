@@ -19,7 +19,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -108,7 +108,7 @@ func TestEPGReconciler_PermissionSnapshotConformsToFormalSchema(t *testing.T) {
 	r := &controller.EPGReconciler{
 		Client:            cl,
 		Scheme:            s,
-		Recorder:          record.NewFakeRecorder(16),
+		Recorder:          clientevents.NewFakeRecorder(16),
 		OperatorNamespace: ns,
 	}
 

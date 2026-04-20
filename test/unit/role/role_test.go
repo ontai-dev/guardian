@@ -59,19 +59,6 @@ func TestParseRole_TenantValid(t *testing.T) {
 
 // ── ReadFromEnv / ExitFn ─────────────────────────────────────────────────────
 
-func withEnv(key, val string, fn func()) func() {
-	return func() {
-		orig, wasSet := "", false
-		// We can't use t.Setenv here since this is a helper; callers must set
-		// the env themselves via os.Setenv before calling ReadFromEnv.
-		_ = key
-		_ = val
-		_ = orig
-		_ = wasSet
-		fn()
-	}
-}
-
 func TestReadFromEnv_AbsentRoleCallsExit(t *testing.T) {
 	t.Setenv("GUARDIAN_ROLE", "")
 

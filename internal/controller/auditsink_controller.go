@@ -7,7 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -55,7 +55,7 @@ type AuditSinkReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// DB is the database.AuditDatabase interface used for deduplication and event
 	// insertion. Injected at construction time; must be non-nil when role=management.
