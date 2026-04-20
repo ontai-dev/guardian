@@ -155,7 +155,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			profile.Generation,
 		)
 
-		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("RBACProfile validation failed",
 			"name", profile.Name, "namespace", profile.Namespace,
 			"failedChecks", validationResult.FailedChecks)
@@ -196,7 +196,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				fmt.Sprintf("RBACPolicy %q not found in namespace %q.", profile.Spec.RBACPolicyRef, profile.Namespace),
 				profile.Generation,
 			)
-			r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "",
+			r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "PolicyNotFound",
 				"Governing RBACPolicy %q not found.", profile.Spec.RBACPolicyRef)
 			return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
 		}
@@ -250,7 +250,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			msg,
 			profile.Generation,
 		)
-		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PermissionSetMissing", "", msg)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PermissionSetMissing", "PermissionSetMissing", msg)
 		return ctrl.Result{RequeueAfter: 30e9}, nil // 30 seconds
 	}
 
@@ -283,7 +283,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			joinedViolations,
 			profile.Generation,
 		)
-		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyViolation", "", joinedViolations)
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "PolicyViolation", "PolicyViolation", joinedViolations)
 		logger.Info("RBACProfile compliance check failed",
 			"name", profile.Name, "namespace", profile.Namespace,
 			"violations", hardViolations)
@@ -324,7 +324,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		profile.Generation,
 	)
 
-	r.Recorder.Eventf(profile, nil, corev1.EventTypeNormal, "ProvisioningComplete", "",
+	r.Recorder.Eventf(profile, nil, corev1.EventTypeNormal, "ProvisioningComplete", "ProvisioningComplete",
 		"RBACProfile provisioned successfully.")
 
 	logger.Info("RBACProfile provisioned",
@@ -357,7 +357,7 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			err.Error(),
 			profile.Generation,
 		)
-		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "RBACMaterializationFailed", "", err.Error())
+		r.Recorder.Eventf(profile, nil, corev1.EventTypeWarning, "RBACMaterializationFailed", "RBACMaterializationFailed", err.Error())
 		logger.Error(err, "Step J: RBAC resource provisioning failed",
 			"name", profile.Name, "namespace", profile.Namespace)
 		return ctrl.Result{}, err

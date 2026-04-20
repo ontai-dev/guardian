@@ -132,7 +132,7 @@ func (r *IdentityProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			provider.Generation,
 		)
 
-		r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
+		r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("IdentityProvider validation failed",
 			"name", provider.Name, "namespace", provider.Namespace, "reasons", joinedReasons)
 
@@ -171,13 +171,13 @@ func (r *IdentityProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				reason,
 				provider.Generation,
 			)
-			r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "Unreachable", "", reason)
+			r.Recorder.Eventf(provider, nil, corev1.EventTypeWarning, "Unreachable", "Unreachable", reason)
 			logger.Info("IdentityProvider OIDC issuer unreachable",
 				"name", provider.Name, "issuerURL", provider.Spec.IssuerURL, "reason", reason)
 		}
 	}
 
-	r.Recorder.Eventf(provider, nil, corev1.EventTypeNormal, "Validated", "",
+	r.Recorder.Eventf(provider, nil, corev1.EventTypeNormal, "Validated", "Validated",
 		"IdentityProvider validated successfully.")
 	logger.Info("IdentityProvider validated",
 		"name", provider.Name, "namespace", provider.Namespace, "type", provider.Spec.Type)

@@ -145,7 +145,7 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 			fmt.Sprintf("Snapshot age %s exceeds freshness window %s.", age.Round(time.Second), windowDuration),
 			snapshot.Generation,
 		)
-		r.Recorder.Eventf(snapshot, nil, "Warning", "SnapshotStale", "",
+		r.Recorder.Eventf(snapshot, nil, "Warning", "SnapshotStale", "SnapshotStale",
 			"PermissionSnapshot age %s exceeds freshness window %s -- target cluster may be serving stale permissions.",
 			age.Round(time.Second), windowDuration)
 		logger.Info("PermissionSnapshot is stale",

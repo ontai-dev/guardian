@@ -147,7 +147,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if apierrors.IsNotFound(err) {
 				// Re-annotate the profile to ensure a retry after policy is created.
 				r.signalRecompute(ctx, &profile)
-				r.Recorder.Eventf(&profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "",
+				r.Recorder.Eventf(&profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "PolicyNotFound",
 					"EPGReconciler: RBACPolicy %q not found; requeue in 15s", profile.Spec.RBACPolicyRef)
 				logger.Info("EPGReconciler: RBACPolicy not found — requeuing",
 					"profile", profile.Name, "policy", profile.Spec.RBACPolicyRef)
@@ -181,7 +181,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 					"permissionSet", key.name, "namespace", key.ns)
 				r.Recorder.Eventf(&securityv1alpha1.PermissionSnapshot{
 					ObjectMeta: metav1.ObjectMeta{Name: "epg-error", Namespace: r.OperatorNamespace},
-				}, nil, corev1.EventTypeWarning, "PermissionSetNotFound", "",
+				}, nil, corev1.EventTypeWarning, "PermissionSetNotFound", "PermissionSetNotFound",
 					"EPGReconciler: PermissionSet %q not found; requeue in 15s", key.name)
 				return ctrl.Result{RequeueAfter: 15e9}, nil
 			}
@@ -212,7 +212,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		logger.Error(err, "EPGReconciler: EPG computation failed — requeuing")
 		r.Recorder.Eventf(
 			r.syntheticEventObj(), nil,
-			corev1.EventTypeWarning, "EPGComputationFailed", "",
+			corev1.EventTypeWarning, "EPGComputationFailed", "EPGComputationFailed",
 			"EPGReconciler: computation failed: %v", err,
 		)
 		return ctrl.Result{RequeueAfter: 15e9}, nil
@@ -312,7 +312,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	// Step J — Emit a Normal event on each generated or updated PermissionSnapshot.
 	for _, snapshot := range upsertedSnapshots {
-		r.Recorder.Eventf(snapshot, nil, corev1.EventTypeNormal, "EPGComputed", "",
+		r.Recorder.Eventf(snapshot, nil, corev1.EventTypeNormal, "EPGComputed", "EPGComputed",
 			"EPG computed. Version: %s.", snapshot.Spec.Version)
 	}
 
@@ -343,7 +343,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		} else {
 			msg := fmt.Sprintf("EPG recomputed. %d snapshot(s) written for clusters: %s.",
 				len(result.TargetClusters), strings.Join(result.TargetClusters, ", "))
-			r.Recorder.Eventf(rc, nil, corev1.EventTypeNormal, "EPGRecomputed", "", msg)
+			r.Recorder.Eventf(rc, nil, corev1.EventTypeNormal, "EPGRecomputed", "EPGRecomputed", msg)
 		}
 	}
 
@@ -395,7 +395,7 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 		// Emit transition event.
 		if dr.IsDrifted && !prevDrift {
 			// Regression: snapshot was in sync, now drifted (e.g. agent restarted).
-			r.Recorder.Eventf(sn, nil, corev1.EventTypeWarning, "SnapshotDriftDetected", "",
+			r.Recorder.Eventf(sn, nil, corev1.EventTypeWarning, "SnapshotDriftDetected", "SnapshotDriftDetected",
 				"Drift detected: %s.", dr.Reason)
 			logger.Info("reconcileDrift: drift regression detected",
 				"snapshot", sn.Name, "reason", dr.Reason)
@@ -410,7 +410,7 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 			})
 		} else if !dr.IsDrifted && prevDrift {
 			// Delivery confirmed: snapshot was drifted, now acknowledged.
-			r.Recorder.Eventf(sn, nil, corev1.EventTypeNormal, "SnapshotDelivered", "",
+			r.Recorder.Eventf(sn, nil, corev1.EventTypeNormal, "SnapshotDelivered", "SnapshotDelivered",
 				"Target cluster acknowledged snapshot version %s.", dr.ExpectedVersion)
 			logger.Info("reconcileDrift: snapshot delivered",
 				"snapshot", sn.Name, "version", dr.ExpectedVersion)

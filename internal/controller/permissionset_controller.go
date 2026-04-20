@@ -109,7 +109,7 @@ func (r *PermissionSetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			ps.Generation,
 		)
 
-		r.Recorder.Eventf(ps, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
+		r.Recorder.Eventf(ps, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("PermissionSet validation failed",
 			"name", ps.Name, "namespace", ps.Namespace, "reasons", joinedReasons)
 
@@ -148,7 +148,7 @@ func (r *PermissionSetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger.Info("PermissionSet reconciled",
 		"name", ps.Name, "namespace", ps.Namespace, "profileReferenceCount", count)
 
-	r.Recorder.Eventf(ps, nil, corev1.EventTypeNormal, "Validated", "",
+	r.Recorder.Eventf(ps, nil, corev1.EventTypeNormal, "Validated", "Validated",
 		"PermissionSet is valid. ProfileReferenceCount=%d.", count)
 
 	// Step 7 — Annotate with epg-recompute-requested.

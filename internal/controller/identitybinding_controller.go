@@ -115,7 +115,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			binding.Generation,
 		)
 
-		r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
+		r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "ValidationFailed", "ValidationFailed", joinedReasons)
 		logger.Info("IdentityBinding validation failed",
 			"name", binding.Name, "namespace", binding.Namespace)
 
@@ -161,7 +161,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				binding.Generation,
 			)
 
-			r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "TrustAnchorUnresolved", "", trust.Message)
+			r.Recorder.Eventf(binding, nil, corev1.EventTypeWarning, "TrustAnchorUnresolved", "TrustAnchorUnresolved", trust.Message)
 			logger.Info("IdentityBinding trust anchor unresolved",
 				"name", binding.Name, "namespace", binding.Namespace,
 				"reason", trust.Reason, "message", trust.Message)
@@ -193,7 +193,7 @@ func (r *IdentityBindingReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		binding.Generation,
 	)
 
-	r.Recorder.Eventf(binding, nil, corev1.EventTypeNormal, "ValidationPassed", "",
+	r.Recorder.Eventf(binding, nil, corev1.EventTypeNormal, "ValidationPassed", "ValidationPassed",
 		"IdentityBinding validated successfully.")
 
 	logger.Info("IdentityBinding validated",
