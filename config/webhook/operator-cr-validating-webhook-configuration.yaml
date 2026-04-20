@@ -1,0 +1,37 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: guardian-operator-cr-webhook
+  annotations:
+    # caBundle is populated at compile time by compiler enable from guardian-ca-secret.
+    ontai.dev/managed-by: compiler
+webhooks:
+  - name: validate-operator-cr.security.ontai.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # FailurePolicy: Fail -- if the webhook is unreachable, admission is blocked.
+    # Operator-created CRs must not be silently modified by human principals.
+    # G-BL-CR-IMMUTABILITY.
+    failurePolicy: Fail
+    rules:
+      - apiGroups: ["infra.ontai.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources: ["packinstances", "packexecutions"]
+        scope: "*"
+      - apiGroups: ["runner.ontai.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources: ["runnerconfigs"]
+        scope: "*"
+      - apiGroups: ["security.ontai.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE"]
+        resources: ["permissionsnapshots"]
+        scope: "*"
+    clientConfig:
+      service:
+        name: guardian
+        namespace: seam-system
+        path: /validate-operator-cr
+        port: 443
