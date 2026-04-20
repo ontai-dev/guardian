@@ -18,6 +18,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -357,16 +358,18 @@ func TestDrift_SnapshotDelivered_EmitsNormalEvent(t *testing.T) {
 	}
 
 	// Verify a SnapshotDelivered Normal event was emitted on the snapshot.
+	// The events.EventRecorder (new API) writes events/v1.Event objects, not
+	// core/v1.Event objects, so we query eventsv1.EventList here.
 	ok = poll(t, 10*time.Second, func() bool {
-		var events corev1.EventList
-		if err := k8sClient.List(context.Background(), &events,
+		var evList eventsv1.EventList
+		if err := k8sClient.List(context.Background(), &evList,
 			client.InNamespace(driftTestNS)); err != nil {
 			return false
 		}
-		for _, e := range events.Items {
+		for _, e := range evList.Items {
 			if e.Reason == "SnapshotDelivered" &&
 				e.Type == corev1.EventTypeNormal &&
-				e.InvolvedObject.Name == "drift-test-snap-ev" {
+				e.Regarding.Name == "drift-test-snap-ev" {
 				return true
 			}
 		}
