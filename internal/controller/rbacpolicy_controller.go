@@ -87,12 +87,14 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Step A3 — Ensure finalizer is present on first observation.
+	// After adding the finalizer we do NOT return early: the metadata-only
+	// Update does not change spec.Generation, so GenerationChangedPredicate
+	// would suppress the next watch event and the policy would never be validated.
 	if !controllerutil.ContainsFinalizer(policy, rbacPolicyFinalizer) {
 		controllerutil.AddFinalizer(policy, rbacPolicyFinalizer)
 		if err := r.Client.Update(ctx, policy); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add rbacpolicy finalizer: %w", err)
 		}
-		return ctrl.Result{}, nil // Requeue: the Update triggers a new reconcile.
 	}
 
 	// Step B — Set up deferred status patch.
