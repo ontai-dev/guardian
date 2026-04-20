@@ -61,6 +61,25 @@ func (s *AdmissionWebhookServer) Register(window *BootstrapWindow, namespaceMode
 	return nil
 }
 
+// RegisterOperatorCRGuard wires the OperatorCRGuardHandler into the manager's
+// webhook server at OperatorCRGuardWebhookPath ("/validate-operator-cr").
+//
+// The handler prevents any non-operator principal from updating the four
+// operator-created CR kinds: PackInstance, RunnerConfig, PermissionSnapshot,
+// and PackExecution. The bootstrap window is passed so the guard lifts during
+// the bootstrap phase before operator RBAC is fully applied. INV-020,
+// G-BL-CR-IMMUTABILITY.
+//
+// RegisterOperatorCRGuard must be called after the manager is created and
+// before mgr.Start, alongside Register. CS-INV-006.
+func (s *AdmissionWebhookServer) RegisterOperatorCRGuard(window *BootstrapWindow) {
+	handler := &OperatorCRGuardHandler{
+		bootstrapWindow: window,
+		auditWriter:     s.AuditWriter,
+	}
+	s.mgr.GetWebhookServer().Register(OperatorCRGuardWebhookPath, &admission.Webhook{Handler: handler})
+}
+
 // RegisterLineage wires the LineageImmutabilityHandler into the manager's webhook
 // server at LineageWebhookPath ("/validate-lineage").
 //
