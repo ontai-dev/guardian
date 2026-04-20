@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -93,4 +94,18 @@ func (s *AdmissionWebhookServer) RegisterOperatorCRGuard(window *BootstrapWindow
 func (s *AdmissionWebhookServer) RegisterLineage() {
 	handler := &LineageImmutabilityHandler{}
 	s.mgr.GetWebhookServer().Register(LineageWebhookPath, &admission.Webhook{Handler: handler})
+}
+
+// RegisterRBACIntake wires the RBACIntakeHandler into the manager's HTTP server at
+// RBACIntakeWebhookPath ("/rbac-intake").
+//
+// The handler accepts POST requests from the Compiler enable phase containing RBAC
+// resources extracted from third-party Helm chart output. It wraps each resource
+// with the ontai.dev/rbac-owner=guardian annotation and applies it via SSA.
+// guardian-schema.md §6, CS-INV-007.
+//
+// RegisterRBACIntake must be called after the manager is created and before mgr.Start.
+func (s *AdmissionWebhookServer) RegisterRBACIntake(c client.Client) {
+	handler := NewRBACIntakeHandler(c, s.AuditWriter)
+	s.mgr.GetWebhookServer().Register(RBACIntakeWebhookPath, handler)
 }
