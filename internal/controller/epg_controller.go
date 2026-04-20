@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,7 +70,7 @@ type EPGReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// Store is the optional EPG store for the PermissionService. When non-nil,
 	// it is updated after each successful EPG computation so that
@@ -147,7 +147,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if apierrors.IsNotFound(err) {
 				// Re-annotate the profile to ensure a retry after policy is created.
 				r.signalRecompute(ctx, &profile)
-				r.Recorder.Eventf(&profile, corev1.EventTypeWarning, "PolicyNotFound",
+				r.Recorder.Eventf(&profile, nil, corev1.EventTypeWarning, "PolicyNotFound", "",
 					"EPGReconciler: RBACPolicy %q not found; requeue in 15s", profile.Spec.RBACPolicyRef)
 				logger.Info("EPGReconciler: RBACPolicy not found — requeuing",
 					"profile", profile.Name, "policy", profile.Spec.RBACPolicyRef)
@@ -181,7 +181,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 					"permissionSet", key.name, "namespace", key.ns)
 				r.Recorder.Eventf(&securityv1alpha1.PermissionSnapshot{
 					ObjectMeta: metav1.ObjectMeta{Name: "epg-error", Namespace: r.OperatorNamespace},
-				}, corev1.EventTypeWarning, "PermissionSetNotFound",
+				}, nil, corev1.EventTypeWarning, "PermissionSetNotFound", "",
 					"EPGReconciler: PermissionSet %q not found; requeue in 15s", key.name)
 				return ctrl.Result{RequeueAfter: 15e9}, nil
 			}
@@ -210,10 +210,10 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	result, err := epg.ComputeEPG(provisioned, policyMap, permSetMap, validBindings)
 	if err != nil {
 		logger.Error(err, "EPGReconciler: EPG computation failed — requeuing")
-		r.Recorder.Event(
-			r.syntheticEventObj(),
-			corev1.EventTypeWarning, "EPGComputationFailed",
-			fmt.Sprintf("EPGReconciler: computation failed: %v", err),
+		r.Recorder.Eventf(
+			r.syntheticEventObj(), nil,
+			corev1.EventTypeWarning, "EPGComputationFailed", "",
+			"EPGReconciler: computation failed: %v", err,
 		)
 		return ctrl.Result{RequeueAfter: 15e9}, nil
 	}
@@ -249,34 +249,50 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 
 		// Server-side apply to upsert the spec.
-		if err := r.Client.Patch(ctx, snapshot, client.Apply, client.ForceOwnership,
-			client.FieldOwner(epgFieldOwner)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to upsert PermissionSnapshot for cluster %s: %w",
-				cluster, err)
+		{
+			uMap, convErr := runtime.DefaultUnstructuredConverter.ToUnstructured(snapshot)
+			if convErr != nil {
+				return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to convert PermissionSnapshot to unstructured for cluster %s: %w",
+					cluster, convErr)
+			}
+			applyConfig := client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: uMap})
+			if err := r.Client.Apply(ctx, applyConfig, client.ForceOwnership,
+				client.FieldOwner(epgFieldOwner)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to upsert PermissionSnapshot for cluster %s: %w",
+					cluster, err)
+			}
 		}
 
 		// Patch the status subresource.
-		// Set ExpectedVersion and Drift=true. Never write LastAckedVersion — that
-		// field is owned exclusively by the runner agent in agent mode.
-		statusPatch := &securityv1alpha1.PermissionSnapshot{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: securityv1alpha1.GroupVersion.String(),
-				Kind:       "PermissionSnapshot",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      snapshot.Name,
-				Namespace: snapshot.Namespace,
-			},
-			Status: securityv1alpha1.PermissionSnapshotStatus{
-				ExpectedVersion: snapshot.Spec.Version,
-				Drift:           true,
-				// LastAckedVersion intentionally not set — owned by runner agent.
-			},
-		}
-		if err := r.Client.Status().Patch(ctx, statusPatch, client.Apply, client.ForceOwnership,
-			client.FieldOwner(epgFieldOwner)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to patch PermissionSnapshot status for cluster %s: %w",
-				cluster, err)
+		// Set ExpectedVersion and Drift=true. Never write LastAckedVersion --
+		// that field is owned exclusively by the runner agent in agent mode.
+		{
+			statusObj := &securityv1alpha1.PermissionSnapshot{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: securityv1alpha1.GroupVersion.String(),
+					Kind:       "PermissionSnapshot",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      snapshot.Name,
+					Namespace: snapshot.Namespace,
+				},
+				Status: securityv1alpha1.PermissionSnapshotStatus{
+					ExpectedVersion: snapshot.Spec.Version,
+					Drift:           true,
+					// LastAckedVersion intentionally not set -- owned by runner agent.
+				},
+			}
+			uMap, convErr := runtime.DefaultUnstructuredConverter.ToUnstructured(statusObj)
+			if convErr != nil {
+				return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to convert PermissionSnapshot status to unstructured for cluster %s: %w",
+					cluster, convErr)
+			}
+			applyConfig := client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: uMap})
+			if err := r.Client.Status().Apply(ctx, applyConfig, client.ForceOwnership,
+				client.FieldOwner(epgFieldOwner)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("EPGReconciler: failed to patch PermissionSnapshot status for cluster %s: %w",
+					cluster, err)
+			}
 		}
 
 		upsertedSnapshots = append(upsertedSnapshots, snapshot)
@@ -296,7 +312,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	// Step J — Emit a Normal event on each generated or updated PermissionSnapshot.
 	for _, snapshot := range upsertedSnapshots {
-		r.Recorder.Eventf(snapshot, corev1.EventTypeNormal, "EPGComputed",
+		r.Recorder.Eventf(snapshot, nil, corev1.EventTypeNormal, "EPGComputed", "",
 			"EPG computed. Version: %s.", snapshot.Spec.Version)
 	}
 
@@ -327,7 +343,7 @@ func (r *EPGReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		} else {
 			msg := fmt.Sprintf("EPG recomputed. %d snapshot(s) written for clusters: %s.",
 				len(result.TargetClusters), strings.Join(result.TargetClusters, ", "))
-			r.Recorder.Event(rc, corev1.EventTypeNormal, "EPGRecomputed", msg)
+			r.Recorder.Eventf(rc, nil, corev1.EventTypeNormal, "EPGRecomputed", "", msg)
 		}
 	}
 
@@ -379,7 +395,7 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 		// Emit transition event.
 		if dr.IsDrifted && !prevDrift {
 			// Regression: snapshot was in sync, now drifted (e.g. agent restarted).
-			r.Recorder.Eventf(sn, corev1.EventTypeWarning, "SnapshotDriftDetected",
+			r.Recorder.Eventf(sn, nil, corev1.EventTypeWarning, "SnapshotDriftDetected", "",
 				"Drift detected: %s.", dr.Reason)
 			logger.Info("reconcileDrift: drift regression detected",
 				"snapshot", sn.Name, "reason", dr.Reason)
@@ -394,7 +410,7 @@ func (r *EPGReconciler) reconcileDrift(ctx context.Context) error {
 			})
 		} else if !dr.IsDrifted && prevDrift {
 			// Delivery confirmed: snapshot was drifted, now acknowledged.
-			r.Recorder.Eventf(sn, corev1.EventTypeNormal, "SnapshotDelivered",
+			r.Recorder.Eventf(sn, nil, corev1.EventTypeNormal, "SnapshotDelivered", "",
 				"Target cluster acknowledged snapshot version %s.", dr.ExpectedVersion)
 			logger.Info("reconcileDrift: snapshot delivered",
 				"snapshot", sn.Name, "version", dr.ExpectedVersion)

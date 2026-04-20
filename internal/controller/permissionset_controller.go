@@ -9,7 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -48,7 +48,7 @@ type PermissionSetReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 }
 
 // Reconcile is the main reconciliation loop for PermissionSet.
@@ -109,7 +109,7 @@ func (r *PermissionSetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			ps.Generation,
 		)
 
-		r.Recorder.Event(ps, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		r.Recorder.Eventf(ps, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
 		logger.Info("PermissionSet validation failed",
 			"name", ps.Name, "namespace", ps.Namespace, "reasons", joinedReasons)
 
@@ -148,8 +148,8 @@ func (r *PermissionSetReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger.Info("PermissionSet reconciled",
 		"name", ps.Name, "namespace", ps.Namespace, "profileReferenceCount", count)
 
-	r.Recorder.Event(ps, corev1.EventTypeNormal, "Validated",
-		fmt.Sprintf("PermissionSet is valid. ProfileReferenceCount=%d.", count))
+	r.Recorder.Eventf(ps, nil, corev1.EventTypeNormal, "Validated", "",
+		"PermissionSet is valid. ProfileReferenceCount=%d.", count)
 
 	// Step 7 — Annotate with epg-recompute-requested.
 	// PermissionSet changes directly affect EPG computation — the ceiling may have

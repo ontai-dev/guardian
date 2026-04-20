@@ -89,28 +89,28 @@ func TestMain(m *testing.M) {
 	if err := (&controller.RBACPolicyReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacpolicy-controller"),
+		Recorder: mgr.GetEventRecorder("rbacpolicy-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register RBACPolicyReconciler: " + err.Error())
 	}
 	if err := (&controller.RBACProfileReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("rbacprofile-controller"),
+		Recorder: mgr.GetEventRecorder("rbacprofile-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register RBACProfileReconciler: " + err.Error())
 	}
 	if err := (&controller.IdentityBindingReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("identitybinding-controller"),
+		Recorder: mgr.GetEventRecorder("identitybinding-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register IdentityBindingReconciler: " + err.Error())
 	}
 	if err := (&controller.EPGReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("epg-controller"),
+		Recorder:          mgr.GetEventRecorder("epg-controller"),
 		OperatorNamespace: testNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register EPGReconciler: " + err.Error())

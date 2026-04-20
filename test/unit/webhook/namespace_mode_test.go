@@ -16,6 +16,7 @@
 package webhook_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ontai-dev/guardian/internal/webhook"
@@ -239,7 +240,7 @@ func TestStaticNamespaceModeResolver_KnownNamespace(t *testing.T) {
 		{"test-ns", webhook.NamespaceModeObserve},
 	}
 	for _, tc := range cases {
-		got := r.ResolveMode(nil, tc.ns)
+		got := r.ResolveMode(context.TODO(), tc.ns)
 		if got != tc.want {
 			t.Errorf("namespace %q: got %q, want %q", tc.ns, got, tc.want)
 		}
@@ -252,7 +253,7 @@ func TestStaticNamespaceModeResolver_UnknownNamespace_DefaultMode(t *testing.T) 
 		Modes:       map[string]webhook.NamespaceMode{},
 		DefaultMode: webhook.NamespaceModeObserve,
 	}
-	got := r.ResolveMode(nil, "some-unknown-namespace")
+	got := r.ResolveMode(context.TODO(), "some-unknown-namespace")
 	if got != webhook.NamespaceModeObserve {
 		t.Errorf("expected DefaultMode %q; got %q", webhook.NamespaceModeObserve, got)
 	}
@@ -265,7 +266,7 @@ func TestStaticNamespaceModeResolver_ZeroDefaultMode_FallsBackToEnforce(t *testi
 		Modes: map[string]webhook.NamespaceMode{},
 		// DefaultMode intentionally omitted — zero value
 	}
-	got := r.ResolveMode(nil, "unlabelled-namespace")
+	got := r.ResolveMode(context.TODO(), "unlabelled-namespace")
 	if got != webhook.NamespaceModeEnforce {
 		t.Errorf("expected NamespaceModeEnforce for zero DefaultMode; got %q", got)
 	}

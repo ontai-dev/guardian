@@ -8,7 +8,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -50,7 +50,7 @@ type PermissionSnapshotReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// Now is the time provider. In production it returns time.Now(). Inject a fixed
 	// time in tests to make freshness assertions deterministic.
@@ -145,9 +145,9 @@ func (r *PermissionSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.R
 			fmt.Sprintf("Snapshot age %s exceeds freshness window %s.", age.Round(time.Second), windowDuration),
 			snapshot.Generation,
 		)
-		r.Recorder.Event(snapshot, "Warning", "SnapshotStale",
-			fmt.Sprintf("PermissionSnapshot age %s exceeds freshness window %s — target cluster may be serving stale permissions.",
-				age.Round(time.Second), windowDuration))
+		r.Recorder.Eventf(snapshot, nil, "Warning", "SnapshotStale", "",
+			"PermissionSnapshot age %s exceeds freshness window %s -- target cluster may be serving stale permissions.",
+			age.Round(time.Second), windowDuration)
 		logger.Info("PermissionSnapshot is stale",
 			"name", snapshot.Name, "namespace", snapshot.Namespace,
 			"age", age, "window", windowDuration)

@@ -10,7 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -47,7 +47,7 @@ type RBACPolicyReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder for emitting Warning and Normal events.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// AuditWriter receives operational audit events from this reconciler.
 	// Nil is safe — events are silently dropped when no writer is configured.
@@ -77,7 +77,7 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Step A2 — Handle deletion. INV-006: emit event, remove finalizer, return. No Job.
 	if !policy.DeletionTimestamp.IsZero() {
-		r.Recorder.Event(policy, corev1.EventTypeNormal, "Deleting",
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeNormal, "Deleting", "",
 			"RBACPolicy is being deleted; releasing finalizer.")
 		controllerutil.RemoveFinalizer(policy, rbacPolicyFinalizer)
 		if err := r.Client.Update(ctx, policy); err != nil {
@@ -160,7 +160,7 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					policy.Generation,
 				)
 				policy.Status.ValidationSummary = "Waiting: PermissionSet not found."
-				r.Recorder.Event(policy, corev1.EventTypeWarning, "PermissionSetNotFound", msg)
+				r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "PermissionSetNotFound", "", msg)
 				logger.Info("RBACPolicy references missing PermissionSet",
 					"name", policy.Name, "namespace", policy.Namespace,
 					"permissionSetRef", policy.Spec.MaximumPermissionSetRef)
@@ -195,7 +195,7 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		policy.Status.ValidationSummary = fmt.Sprintf(
 			"Validation failed: %d check(s) failed.", len(validationResult.FailedChecks))
 
-		r.Recorder.Event(policy, corev1.EventTypeWarning, "ValidationFailed", joinedReasons)
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "ValidationFailed", "", joinedReasons)
 
 		logger.Info("RBACPolicy validation failed",
 			"name", policy.Name, "namespace", policy.Namespace,
@@ -236,7 +236,7 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	policy.Status.ValidationSummary = "Valid."
 
-	r.Recorder.Event(policy, corev1.EventTypeNormal, "ValidationPassed", "Policy validated successfully.")
+	r.Recorder.Eventf(policy, nil, corev1.EventTypeNormal, "ValidationPassed", "", "Policy validated successfully.")
 
 	logger.Info("RBACPolicy validated successfully",
 		"name", policy.Name, "namespace", policy.Namespace)

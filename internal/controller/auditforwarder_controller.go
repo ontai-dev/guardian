@@ -10,7 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,7 +54,7 @@ type AuditForwarderController struct {
 	Scheme *runtime.Scheme
 
 	// Recorder is the Kubernetes event recorder.
-	Recorder record.EventRecorder
+	Recorder clientevents.EventRecorder
 
 	// EventCh is the in-memory channel that the webhook decision path writes
 	// AuditForwarderEvent values to. Must be set before Start is called.

@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -92,7 +92,7 @@ func TestRBACProfileReconciler_AuditWriterCalledOnProvisionSuccess(t *testing.T)
 	r := &controller.RBACProfileReconciler{
 		Client:      c,
 		Scheme:      s,
-		Recorder:    record.NewFakeRecorder(32),
+		Recorder:    clientevents.NewFakeRecorder(32),
 		AuditWriter: aw,
 	}
 
@@ -158,7 +158,7 @@ func TestRBACProfileReconciler_NilAuditWriterDoesNotPanic(t *testing.T) {
 	r := &controller.RBACProfileReconciler{
 		Client:   c,
 		Scheme:   s,
-		Recorder: record.NewFakeRecorder(32),
+		Recorder: clientevents.NewFakeRecorder(32),
 		// AuditWriter intentionally left nil — matches existing test construction.
 	}
 
