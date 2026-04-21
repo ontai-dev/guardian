@@ -109,3 +109,21 @@ func (s *AdmissionWebhookServer) RegisterRBACIntake(c client.Client) {
 	handler := NewRBACIntakeHandler(c, s.AuditWriter)
 	s.mgr.GetWebhookServer().Register(RBACIntakeWebhookPath, handler)
 }
+
+// RegisterDeclaringPrincipal wires the DeclaringPrincipalHandler into the manager's
+// webhook server at DeclaringPrincipalWebhookPath ("/mutate-declaring-principal").
+//
+// The handler stamps the annotation infrastructure.ontai.dev/declaring-principal
+// with the requesting principal's username on CREATE requests for root declaration
+// CRDs (TalosCluster, SeamInfrastructureCluster, SeamInfrastructureMachine,
+// ClusterPack, PackExecution, PackInstance, RBACPolicy, RBACProfile, IdentityBinding).
+//
+// UPDATE and DELETE requests are always admitted without modification.
+// Requests during the bootstrap window are admitted without stamping (INV-020).
+//
+// RegisterDeclaringPrincipal must be called after the manager is created and
+// before mgr.Start, alongside Register. CS-INV-006.
+func (s *AdmissionWebhookServer) RegisterDeclaringPrincipal(window *BootstrapWindow) {
+	handler := &DeclaringPrincipalHandler{bootstrapWindow: window}
+	s.mgr.GetWebhookServer().Register(DeclaringPrincipalWebhookPath, &admission.Webhook{Handler: handler})
+}
