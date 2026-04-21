@@ -37,15 +37,23 @@ type AuditDatabase interface {
 	InsertEvent(ctx context.Context, event AuditEvent) error
 }
 
+// LineageIndexRef identifies the InfrastructureLineageIndex governing an audit subject.
+// Absent for platform-wide events. guardian-schema.md §17.
+type LineageIndexRef struct {
+	Name      string
+	Namespace string
+}
+
 // AuditEvent is a single audit event record written to the audit_events table.
 type AuditEvent struct {
-	ClusterID      string
-	SequenceNumber int64
-	Subject        string
-	Action         string
-	Resource       string
-	Decision       string
-	MatchedPolicy  string
+	ClusterID        string
+	SequenceNumber   int64
+	Subject          string
+	Action           string
+	Resource         string
+	Decision         string
+	MatchedPolicy    string
+	LineageIndexRef  *LineageIndexRef
 }
 
 // SQLAuditStore implements AuditDatabase using a sql.DB (CNPG backend).
