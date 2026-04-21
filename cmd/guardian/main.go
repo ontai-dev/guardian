@@ -215,6 +215,10 @@ func main() {
 		os.Exit(1)
 	}
 	webhookServer.RegisterLineage()
+	webhookServer.RegisterRBACIntake(mgr.GetClient())
+	webhookServer.RegisterPackIntake(mgr.GetClient())
+	webhookServer.RegisterOperatorCRGuard(bootstrapWindow)
+	webhookServer.RegisterDeclaringPrincipal(bootstrapWindow)
 
 	// Register the bootstrap label check as a post-cache Runnable. Runs for both
 	// roles. CheckBootstrapLabels reads the seam-system namespace, which requires
