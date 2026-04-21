@@ -520,6 +520,48 @@ Conductor Engineer session. This is tracked in CONTEXT.md.
 
 ---
 
+---
+
+## 17. Audit Record Schema
+
+Guardian writes audit events to the CNPG audit_events table via `AuditWriter`
+(database package). The record type is `database.AuditEvent`. This section
+specifies the canonical field contract for that type.
+
+### AuditEvent fields
+
+| Field          | Type   | Description                                                                   |
+|----------------|--------|-------------------------------------------------------------------------------|
+| ClusterID      | string | Identifier of the cluster where the event originated.                         |
+| SequenceNumber | int64  | Monotonic event sequence number. Used for deduplication.                      |
+| Subject        | string | Identity of the principal performing the action.                              |
+| Action         | string | Dot-namespaced event type (e.g., rbac.wrapped, bootstrap.annotation_sweep).   |
+| Resource       | string | Name of the resource the action targets.                                      |
+| Decision       | string | Authorization decision: admit or deny.                                        |
+| MatchedPolicy  | string | Name of the RBACPolicy or rule that produced the decision. Optional.          |
+| LineageIndexRef| object | Reference to the InfrastructureLineageIndex governing the root declaration associated with this event. Optional -- absent for platform-wide events not associated with a specific root declaration. |
+
+### lineageIndexRef
+
+| Field     | Type   | Description                                   |
+|-----------|--------|-----------------------------------------------|
+| Name      | string | Name of the InfrastructureLineageIndex CR.    |
+| Namespace | string | Namespace of the InfrastructureLineageIndex CR. |
+
+**Population rule:** Guardian reconcilers populate LineageIndexRef when emitting
+audit events for governed objects (RBACProfile provisioned, PermissionSnapshot
+drift, IdentityBinding resolved). Platform-wide events (bootstrap annotation sweep,
+startup migration complete) leave LineageIndexRef absent. This is not an error --
+absent lineageIndexRef signals a platform-wide event, not an object-scoped event.
+
+**Correlation contract:** When LineageIndexRef is present, the combination
+(ClusterID, SequenceNumber, LineageIndexRef.Name, LineageIndexRef.Namespace)
+uniquely identifies the event within the causal chain of the root declaration
+recorded in the InfrastructureLineageIndex. Vortex uses this to correlate audit
+events with lineage records without additional lookups.
+
+---
+
 *security.ontai.dev schema - guardian*
 *Amendments appended below with date and rationale.*
 
@@ -560,6 +602,13 @@ Conductor Engineer session. This is tracked in CONTEXT.md.
   AuditForwarderController); PermissionService gRPC runs in both roles. §16 CNPG Deployment
   Contract added (locked invariant): management CNPG owned by compiler enable phase 0; tenant
   CNPG owned by ClusterPack; no other operator has CNPG dependency (INV-016); F-P8 recorded.
+
+2026-04-21 - lineageIndexRef added to audit record specification (§17 Audit Record
+  Schema added). Guardian reconcilers populate this field when emitting audit events
+  for governed objects. Platform-wide events leave lineageIndexRef absent. Closes the
+  correlation loop between governance events and the structural lineage index.
+  LineageIndexRef carries name and namespace of the InfrastructureLineageIndex CR
+  governing the root declaration associated with the event. Session/12.
 
 2026-04-09 - G-BL-11: Tenant Guardian CNPG and audit forwarding model amended. §15
   Role=tenant updated: tenant Guardian always connects to tenant-local CNPG (no CRD-only
