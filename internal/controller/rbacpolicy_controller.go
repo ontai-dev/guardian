@@ -202,13 +202,14 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"failedChecks", validationResult.FailedChecks)
 
 		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-			ClusterID:      "management",
-			Subject:        "guardian",
-			Action:         "rbacpolicy.validation_failed",
-			Resource:       policy.Name,
-			Decision:       "system",
-			MatchedPolicy:  joinedReasons,
-			SequenceNumber: auditSeq(),
+			ClusterID:       "management",
+			Subject:         "guardian",
+			Action:          "rbacpolicy.validation_failed",
+			Resource:        policy.Name,
+			Decision:        "system",
+			MatchedPolicy:   joinedReasons,
+			SequenceNumber:  auditSeq(),
+			LineageIndexRef: lineageRef("RBACPolicy", policy.Name, policy.Namespace),
 		})
 
 		// A structurally invalid policy requires human correction. The reconciler
@@ -242,13 +243,14 @@ func (r *RBACPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"name", policy.Name, "namespace", policy.Namespace)
 
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-		ClusterID:      "management",
-		Subject:        "guardian",
-		Action:         "rbacpolicy.validated",
-		Resource:       policy.Name,
-		Decision:       "system",
-		MatchedPolicy:  "ValidationPassed",
-		SequenceNumber: auditSeq(),
+		ClusterID:       "management",
+		Subject:         "guardian",
+		Action:          "rbacpolicy.validated",
+		Resource:        policy.Name,
+		Decision:        "system",
+		MatchedPolicy:   "ValidationPassed",
+		SequenceNumber:  auditSeq(),
+		LineageIndexRef: lineageRef("RBACPolicy", policy.Name, policy.Namespace),
 	})
 
 	return ctrl.Result{}, nil

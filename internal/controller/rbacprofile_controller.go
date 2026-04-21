@@ -161,13 +161,14 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"failedChecks", validationResult.FailedChecks)
 
 		writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-			ClusterID:      "management",
-			Subject:        "guardian",
-			Action:         "rbacprofile.validation_failed",
-			Resource:       profile.Name,
-			Decision:       "system",
-			MatchedPolicy:  joinedReasons,
-			SequenceNumber: auditSeq(),
+			ClusterID:       "management",
+			Subject:         "guardian",
+			Action:          "rbacprofile.validation_failed",
+			Resource:        profile.Name,
+			Decision:        "system",
+			MatchedPolicy:   joinedReasons,
+			SequenceNumber:  auditSeq(),
+			LineageIndexRef: lineageRef("RBACProfile", profile.Name, profile.Namespace),
 		})
 
 		// A structurally invalid profile requires human correction. No requeue.
@@ -331,13 +332,14 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		"name", profile.Name, "namespace", profile.Namespace)
 
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-		ClusterID:      "management",
-		Subject:        profile.Spec.PrincipalRef,
-		Action:         "rbacprofile.provisioned",
-		Resource:       profile.Name,
-		Decision:       "system",
-		MatchedPolicy:  "ProvisioningComplete",
-		SequenceNumber: auditSeq(),
+		ClusterID:       "management",
+		Subject:         profile.Spec.PrincipalRef,
+		Action:          "rbacprofile.provisioned",
+		Resource:        profile.Name,
+		Decision:        "system",
+		MatchedPolicy:   "ProvisioningComplete",
+		SequenceNumber:  auditSeq(),
+		LineageIndexRef: lineageRef("RBACProfile", profile.Name, profile.Namespace),
 	})
 
 	// Step J — Materialise Kubernetes RBAC resources for this profile.
@@ -445,13 +447,14 @@ func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, prof
 		return fmt.Errorf("apply ClusterRole %s: %w", clusterRoleName, err)
 	}
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-		ClusterID:      "management",
-		Subject:        profile.Spec.PrincipalRef,
-		Action:         "clusterrole.materialized",
-		Resource:       clusterRoleName,
-		Decision:       "system",
-		MatchedPolicy:  profile.Name,
-		SequenceNumber: auditSeq(),
+		ClusterID:       "management",
+		Subject:         profile.Spec.PrincipalRef,
+		Action:          "clusterrole.materialized",
+		Resource:        clusterRoleName,
+		Decision:        "system",
+		MatchedPolicy:   profile.Name,
+		SequenceNumber:  auditSeq(),
+		LineageIndexRef: lineageRef("RBACProfile", profile.Name, profile.Namespace),
 	})
 
 	// ClusterRoleBinding.
@@ -460,13 +463,14 @@ func (r *RBACProfileReconciler) provisionRBACResources(ctx context.Context, prof
 		return fmt.Errorf("apply ClusterRoleBinding %s: %w", clusterRoleName, err)
 	}
 	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
-		ClusterID:      "management",
-		Subject:        profile.Spec.PrincipalRef,
-		Action:         "clusterrolebinding.materialized",
-		Resource:       clusterRoleName,
-		Decision:       "system",
-		MatchedPolicy:  profile.Name,
-		SequenceNumber: auditSeq(),
+		ClusterID:       "management",
+		Subject:         profile.Spec.PrincipalRef,
+		Action:          "clusterrolebinding.materialized",
+		Resource:        clusterRoleName,
+		Decision:        "system",
+		MatchedPolicy:   profile.Name,
+		SequenceNumber:  auditSeq(),
+		LineageIndexRef: lineageRef("RBACProfile", profile.Name, profile.Namespace),
 	})
 
 	return nil
