@@ -41,11 +41,28 @@ var OpenFunc = func(cfg ConnConfig) (*sql.DB, error) {
 // cancelled or the connection succeeds. It does not crash — it holds in degraded
 // state per guardian-schema.md §3 Step 1.
 //
-// kube is used only for condition writes; if nil (tests), condition writes are skipped.
-func RunWithRetry(ctx context.Context, cfg ConnConfig, kube client.Client) (DB, error) {
+// configFn is called on every retry attempt so that a rotated CNPG credential
+// (secret updated by CNPG after a pod restart) is picked up without requiring
+// a guardian restart. kube is used only for condition writes; if nil (tests),
+// condition writes are skipped.
+func RunWithRetry(ctx context.Context, configFn func() (ConnConfig, error), kube client.Client) (DB, error) {
 	logger := log.FromContext(ctx).WithName("cnpg-startup")
 
 	for {
+		cfg, cfgErr := configFn()
+		if cfgErr != nil {
+			logger.Error(cfgErr, "CNPG config unresolvable; entering degraded hold")
+			if kube != nil {
+				msg := fmt.Sprintf("CNPG config unresolvable: %v. Retrying every %s.", cfgErr, CNPGRetryInterval)
+				_ = setCNPGCondition(ctx, kube, metav1.ConditionTrue, ReasonCNPGRetrying, msg)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(CNPGRetryInterval):
+			}
+			continue
+		}
 		db, err := OpenFunc(cfg)
 		if err == nil {
 			runner := NewMigrationRunner(db)

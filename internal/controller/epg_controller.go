@@ -565,7 +565,18 @@ func (permissionSnapshotStaleFilter) Update(e event.UpdateEvent) bool {
 	return oldWasFresh && newIsStale
 }
 
-func (permissionSnapshotStaleFilter) Create(_ event.CreateEvent) bool  { return false }
+// Create returns true when the informer cache sends a synthetic Create event for
+// a PermissionSnapshot that is already stale (Fresh=False) on controller restart.
+// Without this, snapshots that were already stale before guardian restarted would
+// never trigger EPG recomputation because no True->False transition event fires.
+func (permissionSnapshotStaleFilter) Create(e event.CreateEvent) bool {
+	snap, ok := e.Object.(*securityv1alpha1.PermissionSnapshot)
+	if !ok {
+		return false
+	}
+	fresh := securityv1alpha1.FindCondition(snap.Status.Conditions, seamconditions.ConditionTypePermissionSnapshotFresh)
+	return fresh != nil && fresh.Status == metav1.ConditionFalse
+}
 func (permissionSnapshotStaleFilter) Delete(_ event.DeleteEvent) bool  { return false }
 func (permissionSnapshotStaleFilter) Generic(_ event.GenericEvent) bool { return false }
 
