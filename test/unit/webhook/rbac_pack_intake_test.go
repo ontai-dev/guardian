@@ -211,7 +211,7 @@ func TestPackIntake_NonPOSTMethodNotAllowed(t *testing.T) {
 
 // TestPackIntake_CreatesRBACProfileAndDependencies verifies that after applying
 // RBAC manifests, the handler creates the PermissionSet, RBACPolicy, and
-// RBACProfile CRs in tenant-{targetCluster} that allow RBACProfileReconciler
+// RBACProfile CRs in seam-tenant-{targetCluster} that allow RBACProfileReconciler
 // to set provisioned=true. CS-INV-005: only the reconciler sets provisioned.
 func TestPackIntake_CreatesRBACProfileAndDependencies(t *testing.T) {
 	s := intakeScheme(t)
@@ -229,7 +229,7 @@ func TestPackIntake_CreatesRBACProfileAndDependencies(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ns := "tenant-ccs-mgmt"
+	ns := "seam-tenant-ccs-mgmt"
 
 	// PermissionSet must exist.
 	ps := &securityv1alpha1.PermissionSet{}

@@ -29,7 +29,7 @@ const RBACPackIntakeWebhookPath = "/rbac-intake/pack"
 // ComponentName names the ClusterPack component (e.g., "nginx-ingress").
 // Manifests is a slice of raw YAML manifest strings from the RBAC OCI layer.
 // TargetCluster identifies the cluster the pack is being deployed to; used for
-// RBACProfile namespace routing (tenant-{targetCluster}) and audit.
+// RBACProfile namespace routing (seam-tenant-{targetCluster}) and audit.
 type PackIntakeRequest struct {
 	ComponentName string   `json:"componentName"`
 	Manifests     []string `json:"manifests"`
@@ -59,12 +59,12 @@ func NewRBACPackIntakeHandler(c client.Client, aw database.AuditWriter) *RBACPac
 }
 
 // ensureRBACProfileCRs creates or updates the PermissionSet, RBACPolicy, and
-// RBACProfile CRs needed for a pack component in the tenant-{targetCluster}
+// RBACProfile CRs needed for a pack component in the seam-tenant-{targetCluster}
 // namespace. These are prerequisites for RBACProfileReconciler to set
 // provisioned=true, which unblocks the conductor wait-rbac-profile step.
 // CS-INV-005: this function only creates the CR; the reconciler sets provisioned.
 func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, componentName, targetCluster string) error {
-	ns := "tenant-" + targetCluster
+	ns := "seam-tenant-" + targetCluster
 	policyName := componentName + "-policy"
 
 	// PermissionSet — placeholder rules; compliance-against-max check is deferred.
