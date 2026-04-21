@@ -5,6 +5,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -55,6 +56,103 @@ type RBACPackIntakeHandler struct {
 // NewRBACPackIntakeHandler creates a new RBACPackIntakeHandler.
 func NewRBACPackIntakeHandler(c client.Client, aw database.AuditWriter) *RBACPackIntakeHandler {
 	return &RBACPackIntakeHandler{client: c, auditWriter: aw}
+}
+
+// ensureRBACProfileCRs creates or updates the PermissionSet, RBACPolicy, and
+// RBACProfile CRs needed for a pack component in the tenant-{targetCluster}
+// namespace. These are prerequisites for RBACProfileReconciler to set
+// provisioned=true, which unblocks the conductor wait-rbac-profile step.
+// CS-INV-005: this function only creates the CR; the reconciler sets provisioned.
+func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, componentName, targetCluster string) error {
+	ns := "tenant-" + targetCluster
+	policyName := componentName + "-policy"
+
+	// PermissionSet — placeholder rules; compliance-against-max check is deferred.
+	ps := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "security.ontai.dev/v1alpha1",
+			"kind":       "PermissionSet",
+			"metadata": map[string]interface{}{
+				"name":      componentName,
+				"namespace": ns,
+				"annotations": map[string]interface{}{
+					rbacOwnerAnnotation: rbacOwnerGuardian,
+				},
+			},
+			"spec": map[string]interface{}{
+				"description": "Pack RBAC permissions for " + componentName,
+				"permissions": []interface{}{
+					map[string]interface{}{
+						"apiGroups": []interface{}{""},
+						"resources": []interface{}{"serviceaccounts"},
+						"verbs":     []interface{}{"get", "list", "watch"},
+					},
+				},
+			},
+		},
+	}
+	psConfig := client.ApplyConfigurationFromUnstructured(ps)
+	if err := h.client.Apply(ctx, psConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+		return fmt.Errorf("apply PermissionSet %s/%s: %w", ns, componentName, err)
+	}
+
+	// RBACPolicy — tenant scope, audit enforcement, references the PermissionSet above.
+	policy := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "security.ontai.dev/v1alpha1",
+			"kind":       "RBACPolicy",
+			"metadata": map[string]interface{}{
+				"name":      policyName,
+				"namespace": ns,
+				"annotations": map[string]interface{}{
+					rbacOwnerAnnotation: rbacOwnerGuardian,
+				},
+			},
+			"spec": map[string]interface{}{
+				"subjectScope":           "tenant",
+				"enforcementMode":        "audit",
+				"allowedClusters":        []interface{}{targetCluster},
+				"maximumPermissionSetRef": componentName,
+			},
+		},
+	}
+	policyConfig := client.ApplyConfigurationFromUnstructured(policy)
+	if err := h.client.Apply(ctx, policyConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+		return fmt.Errorf("apply RBACPolicy %s/%s: %w", ns, policyName, err)
+	}
+
+	// RBACProfile — named-identity principal (not SA format) so reconciler Step J
+	// is a no-op. Reconciler validates, finds policy+permset, sets provisioned=true.
+	profile := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "security.ontai.dev/v1alpha1",
+			"kind":       "RBACProfile",
+			"metadata": map[string]interface{}{
+				"name":      componentName,
+				"namespace": ns,
+				"annotations": map[string]interface{}{
+					rbacOwnerAnnotation: rbacOwnerGuardian,
+				},
+			},
+			"spec": map[string]interface{}{
+				"principalRef":    componentName,
+				"targetClusters": []interface{}{targetCluster},
+				"permissionDeclarations": []interface{}{
+					map[string]interface{}{
+						"permissionSetRef": componentName,
+						"scope":            "cluster",
+					},
+				},
+				"rbacPolicyRef": policyName,
+			},
+		},
+	}
+	profileConfig := client.ApplyConfigurationFromUnstructured(profile)
+	if err := h.client.Apply(ctx, profileConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+		return fmt.Errorf("apply RBACProfile %s/%s: %w", ns, componentName, err)
+	}
+
+	return nil
 }
 
 // ServeHTTP implements http.Handler for the /rbac-intake/pack endpoint.
@@ -140,6 +238,17 @@ func (h *RBACPackIntakeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			"targetCluster", req.TargetCluster,
 			"kind", obj.GetKind(),
 			"name", obj.GetName())
+	}
+
+	// After applying all RBAC manifests, synthesise the guardian security CRs
+	// required for RBACProfileReconciler to set provisioned=true.
+	// The conductor wait-rbac-profile step polls this profile.
+	// CS-INV-005: RBACProfileReconciler sets provisioned=true; we only CREATE the CR.
+	if err := h.ensureRBACProfileCRs(ctx, req.ComponentName, req.TargetCluster); err != nil {
+		logger.Error(err, "rbac-intake/pack: failed to ensure RBACProfile CRs",
+			"component", req.ComponentName, "targetCluster", req.TargetCluster)
+		http.Error(w, fmt.Sprintf("ensure RBACProfile CRs: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

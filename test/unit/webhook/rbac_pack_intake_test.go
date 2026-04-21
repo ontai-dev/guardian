@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/webhook"
 )
 
@@ -205,6 +206,57 @@ func TestPackIntake_NonPOSTMethodNotAllowed(t *testing.T) {
 
 	if rw.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rw.Code)
+	}
+}
+
+// TestPackIntake_CreatesRBACProfileAndDependencies verifies that after applying
+// RBAC manifests, the handler creates the PermissionSet, RBACPolicy, and
+// RBACProfile CRs in tenant-{targetCluster} that allow RBACProfileReconciler
+// to set provisioned=true. CS-INV-005: only the reconciler sets provisioned.
+func TestPackIntake_CreatesRBACProfileAndDependencies(t *testing.T) {
+	s := intakeScheme(t)
+	c := newFakeClientWithRBAC(t, s)
+	h := webhook.NewRBACPackIntakeHandler(c, nil)
+
+	req := webhook.PackIntakeRequest{
+		ComponentName: "nginx-ingress-v4",
+		Manifests:     []string{clusterRoleYAML("ingress-nginx")},
+		TargetCluster: "ccs-mgmt",
+	}
+	rw := postPackIntake(t, h, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+
+	ctx := context.Background()
+	ns := "tenant-ccs-mgmt"
+
+	// PermissionSet must exist.
+	ps := &securityv1alpha1.PermissionSet{}
+	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4", Namespace: ns}, ps); err != nil {
+		t.Errorf("PermissionSet not created: %v", err)
+	}
+
+	// RBACPolicy must exist.
+	policy := &securityv1alpha1.RBACPolicy{}
+	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4-policy", Namespace: ns}, policy); err != nil {
+		t.Errorf("RBACPolicy not created: %v", err)
+	}
+
+	// RBACProfile must exist with correct principalRef and rbacPolicyRef.
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4", Namespace: ns}, profile); err != nil {
+		t.Errorf("RBACProfile not created: %v", err)
+		return
+	}
+	if profile.Spec.PrincipalRef != "nginx-ingress-v4" {
+		t.Errorf("principalRef: got %q want %q", profile.Spec.PrincipalRef, "nginx-ingress-v4")
+	}
+	if profile.Spec.RBACPolicyRef != "nginx-ingress-v4-policy" {
+		t.Errorf("rbacPolicyRef: got %q want %q", profile.Spec.RBACPolicyRef, "nginx-ingress-v4-policy")
+	}
+	if len(profile.Spec.TargetClusters) == 0 || profile.Spec.TargetClusters[0] != "ccs-mgmt" {
+		t.Errorf("targetClusters: got %v want [ccs-mgmt]", profile.Spec.TargetClusters)
 	}
 }
 
