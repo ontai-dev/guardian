@@ -301,12 +301,9 @@ type cnpgStartupRunnable struct {
 
 func (r *cnpgStartupRunnable) Start(ctx context.Context) error {
 	log := ctrl.Log.WithName("cnpg-startup")
-	cfg, err := database.ConnConfigFromSecret(ctx, r.kube)
-	if err != nil {
-		// CNPG_SECRET_NAME / CNPG_SECRET_NAMESPACE not set is a hard failure.
-		return fmt.Errorf("cannot resolve CNPG connection config: %w", err)
-	}
-	db, err := database.RunWithRetry(ctx, cfg, r.kube)
+	db, err := database.RunWithRetry(ctx, func() (database.ConnConfig, error) {
+		return database.ConnConfigFromSecret(ctx, r.kube)
+	}, r.kube)
 	if err != nil {
 		// ctx cancelled — clean shutdown.
 		return fmt.Errorf("CNPG startup aborted: %w", err)

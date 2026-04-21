@@ -63,7 +63,9 @@ func TestRunWithRetry_ContextCancellationStopsRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 
-	_, err := database.RunWithRetry(ctx, database.ConnConfig{}, nil)
+	_, err := database.RunWithRetry(ctx, func() (database.ConnConfig, error) {
+		return database.ConnConfig{}, nil
+	}, nil)
 
 	if err == nil {
 		t.Fatal("expected RunWithRetry to return an error when context is cancelled")
@@ -101,7 +103,9 @@ func TestRunWithRetry_CNPGUnreachableSetsCondition(t *testing.T) {
 	defer cancel()
 
 	// kube is non-nil so condition writes are attempted.
-	database.RunWithRetry(ctx, database.ConnConfig{}, fakeKube) //nolint:errcheck
+	database.RunWithRetry(ctx, func() (database.ConnConfig, error) { //nolint:errcheck
+		return database.ConnConfig{}, nil
+	}, fakeKube)
 
 	// Re-fetch the Guardian singleton and verify the condition was set.
 	g := &securityv1alpha1.Guardian{}

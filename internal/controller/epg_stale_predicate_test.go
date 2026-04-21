@@ -101,16 +101,36 @@ func TestAC2_EPGStaleFilter_SuppressesStaleToFreshUpdate(t *testing.T) {
 	}
 }
 
-// TestAC2_EPGStaleFilter_SuppressesCreateDeleteGenericEvents verifies that
-// Create, Delete, and Generic events are never passed by the stale filter.
-// EPG auto-refresh is an update-only trigger.
-func TestAC2_EPGStaleFilter_SuppressesCreateDeleteGenericEvents(t *testing.T) {
+// TestAC2_EPGStaleFilter_SuppressesFreshCreateEvent verifies that Create events
+// for fresh snapshots are suppressed. Only stale snapshots need an immediate recompute.
+func TestAC2_EPGStaleFilter_SuppressesFreshCreateEvent(t *testing.T) {
+	filter := permissionSnapshotStaleFilter{}
+	snap := makeSnapshotWithFresh("ps-ac2-fresh-create", true)
+
+	if filter.Create(event.CreateEvent{Object: snap}) {
+		t.Error("AC-2: stale filter must suppress Create events for fresh snapshots")
+	}
+}
+
+// TestAC2_EPGStaleFilter_PassesStaleCreateEvent verifies that Create events for
+// already-stale snapshots are passed. On controller restart the informer cache emits
+// synthetic Create events; without this, a snapshot that was Fresh=False before the
+// restart would never trigger EPG recomputation.
+func TestAC2_EPGStaleFilter_PassesStaleCreateEvent(t *testing.T) {
+	filter := permissionSnapshotStaleFilter{}
+	snap := makeSnapshotWithFresh("ps-ac2-stale-create", false)
+
+	if !filter.Create(event.CreateEvent{Object: snap}) {
+		t.Error("AC-2: stale filter must pass Create events for already-stale snapshots (restart recovery)")
+	}
+}
+
+// TestAC2_EPGStaleFilter_SuppressesDeleteGenericEvents verifies that Delete and
+// Generic events are never passed by the stale filter.
+func TestAC2_EPGStaleFilter_SuppressesDeleteGenericEvents(t *testing.T) {
 	filter := permissionSnapshotStaleFilter{}
 	snap := makeSnapshotWithFresh("ps-ac2-nonevent", true)
 
-	if filter.Create(event.CreateEvent{Object: snap}) {
-		t.Error("AC-2: stale filter must suppress Create events")
-	}
 	if filter.Delete(event.DeleteEvent{Object: snap}) {
 		t.Error("AC-2: stale filter must suppress Delete events")
 	}
