@@ -215,12 +215,3 @@ func newFakeClientWithRBAC(t *testing.T, s *runtime.Scheme) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(s).Build()
 }
-
-// clusterRoleFixture returns a minimal ClusterRole object for use in tests that
-// need a pre-existing cluster role in the fake client.
-func clusterRoleFixture(name string) *rbacv1.ClusterRole {
-	return &rbacv1.ClusterRole{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-}
