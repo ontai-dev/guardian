@@ -110,6 +110,20 @@ func (s *AdmissionWebhookServer) RegisterRBACIntake(c client.Client) {
 	s.mgr.GetWebhookServer().Register(RBACIntakeWebhookPath, handler)
 }
 
+// RegisterPackIntake wires the RBACPackIntakeHandler into the manager's HTTP server at
+// RBACPackIntakeWebhookPath ("/rbac-intake/pack").
+//
+// The handler accepts POST requests from the pack-deploy capability containing YAML
+// manifests from the RBAC layer of a ClusterPack OCI artifact. It wraps each resource
+// with the ontai.dev/rbac-owner=guardian annotation and applies via SSA.
+// INV-004, guardian-schema.md §6, wrapper-schema.md §4.
+//
+// RegisterPackIntake must be called after the manager is created and before mgr.Start.
+func (s *AdmissionWebhookServer) RegisterPackIntake(c client.Client) {
+	handler := NewRBACPackIntakeHandler(c, s.AuditWriter)
+	s.mgr.GetWebhookServer().Register(RBACPackIntakeWebhookPath, handler)
+}
+
 // RegisterDeclaringPrincipal wires the DeclaringPrincipalHandler into the manager's
 // webhook server at DeclaringPrincipalWebhookPath ("/mutate-declaring-principal").
 //
