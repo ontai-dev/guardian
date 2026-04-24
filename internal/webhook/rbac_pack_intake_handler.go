@@ -58,12 +58,13 @@ func NewRBACPackIntakeHandler(c client.Client, aw database.AuditWriter) *RBACPac
 	return &RBACPackIntakeHandler{client: c, auditWriter: aw}
 }
 
-// ensureRBACProfileCRs creates or updates the PermissionSet, RBACPolicy, and
-// RBACProfile CRs needed for a pack component in the seam-tenant-{targetCluster}
-// namespace. These are prerequisites for RBACProfileReconciler to set
-// provisioned=true, which unblocks the conductor wait-rbac-profile step.
+// EnsurePackRBACProfileCRs creates or updates the PermissionSet, RBACPolicy, and
+// RBACProfile CRs needed for a pack component in seam-tenant-{targetCluster}.
+// These CRs are prerequisites for RBACProfileReconciler to set provisioned=true,
+// unblocking the conductor wait-rbac-profile step. Decision F: target namespace
+// is always seam-tenant-{targetCluster} regardless of cluster role.
 // CS-INV-005: this function only creates the CR; the reconciler sets provisioned.
-func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, componentName, targetCluster string) error {
+func EnsurePackRBACProfileCRs(ctx context.Context, c client.Client, componentName, targetCluster string) error {
 	ns := "seam-tenant-" + targetCluster
 	policyName := componentName + "-policy"
 
@@ -92,7 +93,7 @@ func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, compon
 		},
 	}
 	psConfig := client.ApplyConfigurationFromUnstructured(ps)
-	if err := h.client.Apply(ctx, psConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+	if err := c.Apply(ctx, psConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
 		return fmt.Errorf("apply PermissionSet %s/%s: %w", ns, componentName, err)
 	}
 
@@ -109,15 +110,15 @@ func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, compon
 				},
 			},
 			"spec": map[string]interface{}{
-				"subjectScope":           "tenant",
-				"enforcementMode":        "audit",
-				"allowedClusters":        []interface{}{targetCluster},
+				"subjectScope":            "tenant",
+				"enforcementMode":         "audit",
+				"allowedClusters":         []interface{}{targetCluster},
 				"maximumPermissionSetRef": componentName,
 			},
 		},
 	}
 	policyConfig := client.ApplyConfigurationFromUnstructured(policy)
-	if err := h.client.Apply(ctx, policyConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+	if err := c.Apply(ctx, policyConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
 		return fmt.Errorf("apply RBACPolicy %s/%s: %w", ns, policyName, err)
 	}
 
@@ -135,7 +136,7 @@ func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, compon
 				},
 			},
 			"spec": map[string]interface{}{
-				"principalRef":    componentName,
+				"principalRef":   componentName,
 				"targetClusters": []interface{}{targetCluster},
 				"permissionDeclarations": []interface{}{
 					map[string]interface{}{
@@ -148,11 +149,16 @@ func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, compon
 		},
 	}
 	profileConfig := client.ApplyConfigurationFromUnstructured(profile)
-	if err := h.client.Apply(ctx, profileConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
+	if err := c.Apply(ctx, profileConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
 		return fmt.Errorf("apply RBACProfile %s/%s: %w", ns, componentName, err)
 	}
 
 	return nil
+}
+
+// ensureRBACProfileCRs delegates to EnsurePackRBACProfileCRs using the handler's client.
+func (h *RBACPackIntakeHandler) ensureRBACProfileCRs(ctx context.Context, componentName, targetCluster string) error {
+	return EnsurePackRBACProfileCRs(ctx, h.client, componentName, targetCluster)
 }
 
 // ServeHTTP implements http.Handler for the /rbac-intake/pack endpoint.
