@@ -22,6 +22,7 @@ import (
 	"os"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	_ "github.com/lib/pq" // registers "postgres" driver for database/sql
 
@@ -168,6 +169,23 @@ func main() {
 			lazyDB: lazyAuditDB,
 		}); err != nil {
 			setupLog.Error(err, "unable to register CNPG startup runnable")
+			os.Exit(1)
+		}
+
+		// Register the RBACProfile back-fill runnable. Scans seam-tenant-* namespaces
+		// at RBAC_BACKFILL_INTERVAL seconds (default 60) and re-creates any missing
+		// RBACProfile CRs for pack components that have a PermissionSet. T-04b.
+		backfillInterval := 60 * time.Second
+		if v := os.Getenv("RBAC_BACKFILL_INTERVAL"); v != "" {
+			if secs, err := strconv.ParseInt(v, 10, 64); err == nil && secs > 0 {
+				backfillInterval = time.Duration(secs) * time.Second
+			}
+		}
+		if err := mgr.Add(&controller.RBACProfileBackfillRunnable{
+			Client:   mgr.GetClient(),
+			Interval: backfillInterval,
+		}); err != nil {
+			setupLog.Error(err, "unable to register RBACProfile back-fill runnable")
 			os.Exit(1)
 		}
 	}
