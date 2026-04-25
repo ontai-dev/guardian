@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -209,11 +210,11 @@ func TestPackIntake_NonPOSTMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestPackIntake_CreatesRBACProfileAndDependencies verifies that after applying
-// RBAC manifests, the handler creates the PermissionSet, RBACPolicy, and
-// RBACProfile CRs in seam-tenant-{targetCluster} that allow RBACProfileReconciler
-// to set provisioned=true. CS-INV-005: only the reconciler sets provisioned.
-func TestPackIntake_CreatesRBACProfileAndDependencies(t *testing.T) {
+// TestPackIntake_CreatesRBACProfileOnly verifies that after applying RBAC manifests,
+// the handler creates exactly one RBACProfile in seam-tenant-{targetCluster} that
+// references cluster-policy (Layer 2). No per-component PermissionSet or RBACPolicy
+// is created. guardian-schema.md §19 Layer 3, §6, CS-INV-005, CS-INV-008.
+func TestPackIntake_CreatesRBACProfileOnly(t *testing.T) {
 	s := intakeScheme(t)
 	c := newFakeClientWithRBAC(t, s)
 	h := webhook.NewRBACPackIntakeHandler(c, nil)
@@ -231,38 +232,54 @@ func TestPackIntake_CreatesRBACProfileAndDependencies(t *testing.T) {
 	ctx := context.Background()
 	ns := "seam-tenant-ccs-mgmt"
 
-	// PermissionSet must exist.
+	// No per-component PermissionSet. guardian-schema.md §19 Layer 3.
 	ps := &securityv1alpha1.PermissionSet{}
-	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4", Namespace: ns}, ps); err != nil {
-		t.Errorf("PermissionSet not created: %v", err)
+	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4", Namespace: ns}, ps); err == nil {
+		t.Error("per-component PermissionSet must not be created: three-layer hierarchy has one PermissionSet per cluster (cluster-maximum)")
 	}
 
-	// RBACPolicy must exist.
+	// No per-component RBACPolicy. guardian-schema.md §19 Layer 2, CS-INV-008.
 	policy := &securityv1alpha1.RBACPolicy{}
-	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4-policy", Namespace: ns}, policy); err != nil {
-		t.Errorf("RBACPolicy not created: %v", err)
+	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4-policy", Namespace: ns}, policy); err == nil {
+		t.Error("per-component RBACPolicy must not be created: cluster-policy is the sole governing policy for all component profiles")
 	}
 
-	// RBACProfile must exist with correct principalRef and rbacPolicyRef.
+	// RBACProfile must reference cluster-policy and carry the component label.
 	profile := &securityv1alpha1.RBACProfile{}
 	if err := c.Get(ctx, types.NamespacedName{Name: "nginx-ingress-v4", Namespace: ns}, profile); err != nil {
-		t.Errorf("RBACProfile not created: %v", err)
-		return
+		t.Fatalf("RBACProfile not created: %v", err)
 	}
 	if profile.Spec.PrincipalRef != "nginx-ingress-v4" {
 		t.Errorf("principalRef: got %q want %q", profile.Spec.PrincipalRef, "nginx-ingress-v4")
 	}
-	if profile.Spec.RBACPolicyRef != "nginx-ingress-v4-policy" {
-		t.Errorf("rbacPolicyRef: got %q want %q", profile.Spec.RBACPolicyRef, "nginx-ingress-v4-policy")
+	if profile.Spec.RBACPolicyRef != "cluster-policy" {
+		t.Errorf("rbacPolicyRef: got %q want cluster-policy", profile.Spec.RBACPolicyRef)
 	}
 	if len(profile.Spec.TargetClusters) == 0 || profile.Spec.TargetClusters[0] != "ccs-mgmt" {
 		t.Errorf("targetClusters: got %v want [ccs-mgmt]", profile.Spec.TargetClusters)
 	}
+	if got := profile.GetLabels()["ontai.dev/policy-type"]; got != "component" {
+		t.Errorf("policy-type label: got %q want component", got)
+	}
 }
 
 // newFakeClientWithRBAC returns a fake controller-runtime client with the RBAC
-// scheme registered, suitable for pack intake handler tests.
+// scheme registered and cluster-policy pre-created in seam-tenant-ccs-mgmt.
+// The cluster-policy is required by EnsurePackRBACProfileCRs before it can create
+// any component RBACProfile. guardian-schema.md §19 Layer 2, §6 intake guard.
 func newFakeClientWithRBAC(t *testing.T, s *runtime.Scheme) client.Client {
 	t.Helper()
-	return fake.NewClientBuilder().WithScheme(s).Build()
+	clusterPolicy := &securityv1alpha1.RBACPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster-policy",
+			Namespace: "seam-tenant-ccs-mgmt",
+		},
+		Spec: securityv1alpha1.RBACPolicySpec{
+			SubjectScope:            "tenant",
+			EnforcementMode:         "audit",
+			AllowedClusters:         []string{"ccs-mgmt"},
+			MaximumPermissionSetRef: "cluster-maximum",
+		},
+	}
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(clusterPolicy).Build()
 }

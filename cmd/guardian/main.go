@@ -411,8 +411,17 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 }
 
 // setupManagementControllers registers controllers that run only when role=management.
-// guardian-schema.md §15.
+// guardian-schema.md §15, §18, §19.
 func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
+	// ClusterRBACPolicyReconciler: provisions cluster-level RBACPolicy and PermissionSet
+	// for each InfrastructureTalosCluster and cascades deletion. guardian-schema.md §18.
+	if err := (&controller.ClusterRBACPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

@@ -12,13 +12,23 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	sigsyaml "sigs.k8s.io/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ontai-dev/guardian/internal/database"
 )
+
+// rbacPolicyGVK is the GroupVersionKind used to look up RBACPolicy objects via
+// the dynamic client when checking for cluster-policy existence. guardian-schema.md §6.
+var rbacPolicyGVK = schema.GroupVersionKind{
+	Group:   "security.ontai.dev",
+	Version: "v1alpha1",
+	Kind:    "RBACPolicy",
+}
 
 // RBACPackIntakeWebhookPath is the HTTP path for the ClusterPack RBAC intake endpoint.
 // The pack-deploy capability POSTs the RBAC layer manifests here before applying
@@ -58,72 +68,31 @@ func NewRBACPackIntakeHandler(c client.Client, aw database.AuditWriter) *RBACPac
 	return &RBACPackIntakeHandler{client: c, auditWriter: aw}
 }
 
-// EnsurePackRBACProfileCRs creates or updates the PermissionSet, RBACPolicy, and
-// RBACProfile CRs needed for a pack component in seam-tenant-{targetCluster}.
-// These CRs are prerequisites for RBACProfileReconciler to set provisioned=true,
-// unblocking the conductor wait-rbac-profile step. Decision F: target namespace
-// is always seam-tenant-{targetCluster} regardless of cluster role.
-// CS-INV-005: this function only creates the CR; the reconciler sets provisioned.
+// EnsurePackRBACProfileCRs creates or updates the RBACProfile for a component in
+// seam-tenant-{targetCluster}. No per-component RBACPolicy or PermissionSet is
+// created -- cluster-policy (Layer 2) is the single governing policy for all
+// components. Component permissions are declared inline in permissionDeclarations.
+// guardian-schema.md §6, §19 Layer 3. CS-INV-005, CS-INV-008.
+//
+// Guard: returns an error if cluster-policy does not yet exist in the target
+// namespace. ClusterRBACPolicyReconciler (§18) must provision it first.
 func EnsurePackRBACProfileCRs(ctx context.Context, c client.Client, componentName, targetCluster string) error {
 	ns := "seam-tenant-" + targetCluster
-	policyName := componentName + "-policy"
 
-	// PermissionSet — placeholder rules; compliance-against-max check is deferred.
-	ps := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "security.ontai.dev/v1alpha1",
-			"kind":       "PermissionSet",
-			"metadata": map[string]interface{}{
-				"name":      componentName,
-				"namespace": ns,
-				"annotations": map[string]interface{}{
-					rbacOwnerAnnotation: rbacOwnerGuardian,
-				},
-			},
-			"spec": map[string]interface{}{
-				"description": "Pack RBAC permissions for " + componentName,
-				"permissions": []interface{}{
-					map[string]interface{}{
-						"apiGroups": []interface{}{""},
-						"resources": []interface{}{"serviceaccounts"},
-						"verbs":     []interface{}{"get", "list", "watch"},
-					},
-				},
-			},
-		},
-	}
-	psConfig := client.ApplyConfigurationFromUnstructured(ps)
-	if err := c.Apply(ctx, psConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
-		return fmt.Errorf("apply PermissionSet %s/%s: %w", ns, componentName, err)
+	// Guard: cluster-policy must exist before any component RBACProfile can reference it.
+	// guardian-schema.md §19 Layer 2, §6 intake guard.
+	clusterPolicy := &unstructured.Unstructured{}
+	clusterPolicy.SetGroupVersionKind(rbacPolicyGVK)
+	if err := c.Get(ctx, client.ObjectKey{Name: "cluster-policy", Namespace: ns}, clusterPolicy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("cluster-policy not yet provisioned in %s: ClusterRBACPolicyReconciler must run first", ns)
+		}
+		return fmt.Errorf("get cluster-policy in %s: %w", ns, err)
 	}
 
-	// RBACPolicy — tenant scope, audit enforcement, references the PermissionSet above.
-	policy := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "security.ontai.dev/v1alpha1",
-			"kind":       "RBACPolicy",
-			"metadata": map[string]interface{}{
-				"name":      policyName,
-				"namespace": ns,
-				"annotations": map[string]interface{}{
-					rbacOwnerAnnotation: rbacOwnerGuardian,
-				},
-			},
-			"spec": map[string]interface{}{
-				"subjectScope":            "tenant",
-				"enforcementMode":         "audit",
-				"allowedClusters":         []interface{}{targetCluster},
-				"maximumPermissionSetRef": componentName,
-			},
-		},
-	}
-	policyConfig := client.ApplyConfigurationFromUnstructured(policy)
-	if err := c.Apply(ctx, policyConfig, client.ForceOwnership, client.FieldOwner(intakeSSAFieldManager)); err != nil {
-		return fmt.Errorf("apply RBACPolicy %s/%s: %w", ns, policyName, err)
-	}
-
-	// RBACProfile — named-identity principal (not SA format) so reconciler Step J
-	// is a no-op. Reconciler validates, finds policy+permset, sets provisioned=true.
+	// RBACProfile -- one per component, references cluster-policy (Layer 2).
+	// No separate PermissionSet object; permission claims declared inline.
+	// guardian-schema.md §19 Layer 3, CS-INV-008.
 	profile := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "security.ontai.dev/v1alpha1",
@@ -134,17 +103,16 @@ func EnsurePackRBACProfileCRs(ctx context.Context, c client.Client, componentNam
 				"annotations": map[string]interface{}{
 					rbacOwnerAnnotation: rbacOwnerGuardian,
 				},
+				"labels": map[string]interface{}{
+					"ontai.dev/managed-by":  "guardian",
+					"ontai.dev/policy-type": "component",
+				},
 			},
 			"spec": map[string]interface{}{
-				"principalRef":   componentName,
-				"targetClusters": []interface{}{targetCluster},
-				"permissionDeclarations": []interface{}{
-					map[string]interface{}{
-						"permissionSetRef": componentName,
-						"scope":            "cluster",
-					},
-				},
-				"rbacPolicyRef": policyName,
+				"principalRef":           componentName,
+				"targetClusters":         []interface{}{targetCluster},
+				"permissionDeclarations": []interface{}{},
+				"rbacPolicyRef":          "cluster-policy",
 			},
 		},
 	}
