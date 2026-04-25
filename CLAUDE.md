@@ -3,7 +3,8 @@
 
 ### Schema authority
 Primary: docs/guardian-schema.md
-Supporting: ~/ontai/conductor/docs/conductor-schema.md (RunnerConfig contract)
+Supporting: ~/ontai/conductor/docs/conductor-schema.md (Conductor capabilities and job protocol)
+Supporting: ~/ontai/seam-core/docs/seam-core-schema.md (InfrastructureRunnerConfig type definition; Decision G)
 
 ### Invariants
 CS-INV-001 -- The admission webhook is the enforcement mechanism. Policy without enforcement is decoration. The webhook must be operational before any other operator is considered enabled. (root INV-003)

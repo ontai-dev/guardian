@@ -389,14 +389,14 @@ exposed by guardian's PermissionService - never through direct database access.
 ## 14. Cross-Domain Rules
 
 Reads: platform.ontai.dev/QueueProfile to provision Kueue ClusterQueue resources.
-Reads: platform.ontai.dev/TalosCluster to detect new cluster registrations and
+Reads: infrastructure.ontai.dev/InfrastructureTalosCluster to detect new cluster registrations and
   create initial RBACProfiles.
-Reads: runner.ontai.dev/RunnerConfig status (capability confirmation).
-Intercepts: infra.ontai.dev/PackExecution at admission (execution gatekeeper).
+Reads: infrastructure.ontai.dev/InfrastructureRunnerConfig status (capability confirmation).
+Intercepts: infrastructure.ontai.dev/InfrastructurePackExecution at admission (execution gatekeeper).
 Writes: security.ontai.dev resources on management cluster.
 Writes: PermissionSnapshotReceipt on target clusters via conductor.
 Writes: Kueue ClusterQueue and ResourceFlavor resources (derived from QueueProfile).
-Never writes to platform.ontai.dev or infra.ontai.dev CRDs.
+Never writes to platform.ontai.dev or infrastructure.ontai.dev CRDs.
 
 The signing annotation (ontai.dev/snapshot-signature) on PermissionSnapshot is
 written by the management cluster conductor, not by the guardian controller.
