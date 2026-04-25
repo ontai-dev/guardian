@@ -2,12 +2,18 @@ package controller_test
 
 // Tests for BootstrapAnnotationRunnable.createThirdPartyProfiles.
 //
+// The SA-discovery redesign (CS-INV-007) means component namespace is determined
+// at runtime by listing ServiceAccounts across all non-system namespaces and
+// matching by ServiceAccountName, not by a hardcoded namespace catalog.
+//
 // Scenarios:
-//   - Profile, PermissionSet, and RBACPolicy are created in the component namespace
-//     when the namespace exists.
-//   - Component is skipped silently when its namespace is absent.
+//   - Profile, PermissionSet, and RBACPolicy are created in the namespace where
+//     the component's ServiceAccount is discovered.
+//   - Component is skipped when its SA cannot be found in any non-system namespace.
 //   - Second run is idempotent: no duplicates, no errors.
-//   - Each resource lands in the component's canonical namespace (not seam-system).
+//   - Discovery uses the discovered namespace (not a hardcoded value).
+//   - NamespaceHint is used as a tiebreaker when the SA name matches in multiple namespaces.
+//   - PrincipalRef reflects the discovered namespace.
 //
 // guardian-schema.md §3 Step 2, §6.
 
@@ -26,17 +32,12 @@ import (
 	"github.com/ontai-dev/guardian/internal/controller"
 )
 
-// buildThirdPartyTestObjects returns the minimal set of runtime objects needed
-// for a third-party profile test. namespaces controls which component namespaces
-// exist. Pass nil to get no component namespaces (only seam-system).
-func buildThirdPartyTestObjects(namespaces ...string) []client.Object {
-	objs := []client.Object{
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "seam-system"}},
+// buildSA constructs a ServiceAccount with the given name and namespace for use
+// in fake client setups. The SA is what discovery uses to locate component namespaces.
+func buildSA(name, ns string) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 	}
-	for _, ns := range namespaces {
-		objs = append(objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
-	}
-	return objs
 }
 
 // newThirdPartyRunnable constructs a BootstrapAnnotationRunnable wired to the
@@ -48,22 +49,15 @@ func newThirdPartyRunnable(cl client.Client) *controller.BootstrapAnnotationRunn
 	}
 }
 
-// TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists verifies that
-// PermissionSet, RBACPolicy, and RBACProfile are created in the component
-// namespace when Start runs on a cluster that has that namespace.
-func TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists(t *testing.T) {
+// TestThirdPartyProfiles_CreatesAllResourcesWhenSADiscovered verifies that
+// PermissionSet, RBACPolicy, and RBACProfile are created in the namespace where
+// the component's ServiceAccount is discovered.
+func TestThirdPartyProfiles_CreatesAllResourcesWhenSADiscovered(t *testing.T) {
 	scheme := buildSweepScheme(t)
-	objs := buildThirdPartyTestObjects("cert-manager")
-
-	// Provide the seam-system namespace for Guardian's own profile (rbac-guardian)
-	// lookup that runs during the sweep. The sweep itself will find no RBAC resources
-	// to annotate — that is fine for this test.
-	objs = append(objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager"}})
-
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager"}},
+			buildSA("cert-manager", "cert-manager"),
 		).
 		Build()
 
@@ -72,7 +66,7 @@ func TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists(t *testing.T)
 		t.Fatalf("Start: %v", err)
 	}
 
-	// PermissionSet must exist in cert-manager namespace.
+	// PermissionSet must exist in the discovered namespace (cert-manager).
 	ps := &securityv1alpha1.PermissionSet{}
 	if err := cl.Get(context.Background(),
 		client.ObjectKey{Namespace: "cert-manager", Name: "cert-manager-baseline"},
@@ -81,7 +75,7 @@ func TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists(t *testing.T)
 		t.Errorf("PermissionSet cert-manager-baseline not found: %v", err)
 	}
 
-	// RBACPolicy must exist in cert-manager namespace.
+	// RBACPolicy must exist in the discovered namespace.
 	policy := &securityv1alpha1.RBACPolicy{}
 	if err := cl.Get(context.Background(),
 		client.ObjectKey{Namespace: "cert-manager", Name: "cert-manager-rbac-policy"},
@@ -96,7 +90,7 @@ func TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists(t *testing.T)
 		t.Errorf("RBACPolicy.EnforcementMode = %q, want strict", policy.Spec.EnforcementMode)
 	}
 
-	// RBACProfile must exist in cert-manager namespace.
+	// RBACProfile must exist in the discovered namespace.
 	profile := &securityv1alpha1.RBACProfile{}
 	if err := cl.Get(context.Background(),
 		client.ObjectKey{Namespace: "cert-manager", Name: "rbac-cert-manager"},
@@ -118,12 +112,11 @@ func TestThirdPartyProfiles_CreatesAllResourcesWhenNamespaceExists(t *testing.T)
 	}
 }
 
-// TestThirdPartyProfiles_SkipsComponentWhenNamespaceAbsent verifies that no
-// PermissionSet, RBACPolicy, or RBACProfile is created for a component whose
-// namespace does not exist on the cluster.
-func TestThirdPartyProfiles_SkipsComponentWhenNamespaceAbsent(t *testing.T) {
+// TestThirdPartyProfiles_SkipsComponentWhenSAAbsent verifies that no resources are
+// created for a component whose ServiceAccount cannot be found in any non-system namespace.
+func TestThirdPartyProfiles_SkipsComponentWhenSAAbsent(t *testing.T) {
 	scheme := buildSweepScheme(t)
-	// Deliberately do not create cert-manager namespace.
+	// No cert-manager SA anywhere.
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	runnable := newThirdPartyRunnable(cl)
 
@@ -132,23 +125,19 @@ func TestThirdPartyProfiles_SkipsComponentWhenNamespaceAbsent(t *testing.T) {
 	}
 
 	psList := &securityv1alpha1.PermissionSetList{}
-	if err := cl.List(context.Background(), psList,
-		client.InNamespace("cert-manager"),
-	); err != nil {
+	if err := cl.List(context.Background(), psList); err != nil {
 		t.Fatalf("list PermissionSets: %v", err)
 	}
 	if len(psList.Items) != 0 {
-		t.Errorf("expected 0 PermissionSets in cert-manager namespace, got %d", len(psList.Items))
+		t.Errorf("expected 0 PermissionSets when no SAs present, got %d", len(psList.Items))
 	}
 
 	profileList := &securityv1alpha1.RBACProfileList{}
-	if err := cl.List(context.Background(), profileList,
-		client.InNamespace("cert-manager"),
-	); err != nil {
+	if err := cl.List(context.Background(), profileList); err != nil {
 		t.Fatalf("list RBACProfiles: %v", err)
 	}
 	if len(profileList.Items) != 0 {
-		t.Errorf("expected 0 RBACProfiles in cert-manager namespace, got %d", len(profileList.Items))
+		t.Errorf("expected 0 RBACProfiles when no SAs present, got %d", len(profileList.Items))
 	}
 }
 
@@ -159,7 +148,7 @@ func TestThirdPartyProfiles_IsIdempotent(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager"}},
+			buildSA("cert-manager", "cert-manager"),
 		).
 		Build()
 
@@ -196,15 +185,16 @@ func TestThirdPartyProfiles_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestThirdPartyProfiles_ResourcesInComponentNamespace verifies that all three
-// resources (PermissionSet, RBACPolicy, RBACProfile) for kueue land in
-// kueue-system, not in seam-system or another namespace.
-func TestThirdPartyProfiles_ResourcesInComponentNamespace(t *testing.T) {
+// TestThirdPartyProfiles_DiscoversByServiceAccountName verifies that profiles land
+// in whichever namespace the SA is actually installed, not a hardcoded one.
+// SA "kueue-controller-manager" in "tooling" -> profiles created in "tooling".
+func TestThirdPartyProfiles_DiscoversByServiceAccountName(t *testing.T) {
 	scheme := buildSweepScheme(t)
+	// Kueue installed in "tooling" instead of the conventional "kueue-system".
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kueue-system"}},
+			buildSA("kueue-controller-manager", "tooling"),
 		).
 		Build()
 
@@ -213,32 +203,120 @@ func TestThirdPartyProfiles_ResourcesInComponentNamespace(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Nothing in seam-system from this run (Seam operator profiles are in seam-system
-	// but those are generated by compiler enable, not by the sweep runnable).
-	psList := &securityv1alpha1.PermissionSetList{}
-	if err := cl.List(context.Background(), psList, client.InNamespace("seam-system")); err != nil {
-		t.Fatalf("list seam-system PermissionSets: %v", err)
-	}
-	if len(psList.Items) != 0 {
-		t.Errorf("expected 0 PermissionSets in seam-system from sweep, got %d", len(psList.Items))
-	}
-
-	// kueue-system must have the profile.
+	// Profile must be in "tooling", not "kueue-system".
 	profile := &securityv1alpha1.RBACProfile{}
 	if err := cl.Get(context.Background(),
-		client.ObjectKey{Namespace: "kueue-system", Name: "rbac-kueue"},
+		client.ObjectKey{Namespace: "tooling", Name: "rbac-kueue"},
 		profile,
 	); err != nil {
-		t.Errorf("RBACProfile rbac-kueue not in kueue-system: %v", err)
+		t.Errorf("RBACProfile rbac-kueue not found in discovered namespace 'tooling': %v", err)
 	}
 
-	// Verify profile is NOT in seam-system.
+	// Must NOT exist in any other namespace.
 	wrongProfile := &securityv1alpha1.RBACProfile{}
 	if err := cl.Get(context.Background(),
-		client.ObjectKey{Namespace: "seam-system", Name: "rbac-kueue"},
+		client.ObjectKey{Namespace: "kueue-system", Name: "rbac-kueue"},
 		wrongProfile,
 	); err == nil {
-		t.Error("RBACProfile rbac-kueue should NOT exist in seam-system")
+		t.Error("RBACProfile rbac-kueue should NOT exist in kueue-system when SA is in 'tooling'")
+	}
+}
+
+// TestThirdPartyProfiles_NamespaceHintUsedOnCollision verifies that when the same
+// SA name appears in multiple non-system namespaces, NamespaceHint is preferred.
+// cert-manager SA is in both "cert-manager" (hint) and "other-ns".
+func TestThirdPartyProfiles_NamespaceHintUsedOnCollision(t *testing.T) {
+	scheme := buildSweepScheme(t)
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			buildSA("cert-manager", "cert-manager"), // matches NamespaceHint
+			buildSA("cert-manager", "other-ns"),
+		).
+		Build()
+
+	runnable := newThirdPartyRunnable(cl)
+	if err := runnable.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Profile must be in the hint namespace.
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := cl.Get(context.Background(),
+		client.ObjectKey{Namespace: "cert-manager", Name: "rbac-cert-manager"},
+		profile,
+	); err != nil {
+		t.Errorf("RBACProfile rbac-cert-manager not found in hint namespace 'cert-manager': %v", err)
+	}
+
+	// Must NOT be in the other namespace.
+	wrongProfile := &securityv1alpha1.RBACProfile{}
+	if err := cl.Get(context.Background(),
+		client.ObjectKey{Namespace: "other-ns", Name: "rbac-cert-manager"},
+		wrongProfile,
+	); err == nil {
+		t.Error("RBACProfile rbac-cert-manager should NOT exist in 'other-ns' when hint is 'cert-manager'")
+	}
+}
+
+// TestThirdPartyProfiles_PrincipalRefUsesDiscoveredNamespace verifies that the
+// RBACProfile.PrincipalRef is built using the discovered namespace, not any
+// hardcoded value. SA "cert-manager" in "custom-ns" -> principalRef uses "custom-ns".
+func TestThirdPartyProfiles_PrincipalRefUsesDiscoveredNamespace(t *testing.T) {
+	scheme := buildSweepScheme(t)
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			buildSA("cert-manager", "custom-ns"),
+		).
+		Build()
+
+	runnable := newThirdPartyRunnable(cl)
+	if err := runnable.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := cl.Get(context.Background(),
+		client.ObjectKey{Namespace: "custom-ns", Name: "rbac-cert-manager"},
+		profile,
+	); err != nil {
+		t.Fatalf("RBACProfile not found: %v", err)
+	}
+	want := "system:serviceaccount:custom-ns:cert-manager"
+	if profile.Spec.PrincipalRef != want {
+		t.Errorf("PrincipalRef = %q, want %q", profile.Spec.PrincipalRef, want)
+	}
+}
+
+// TestThirdPartyProfiles_SystemNamespaceSAsIgnored verifies that SAs found in
+// system namespaces (kube-system, ont-system, seam-system) are not used for
+// discovery — only non-system namespaces are eligible.
+func TestThirdPartyProfiles_SystemNamespaceSAsIgnored(t *testing.T) {
+	scheme := buildSweepScheme(t)
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			// SAs in system namespaces must be ignored.
+			buildSA("cert-manager", "kube-system"),
+			buildSA("cert-manager", "ont-system"),
+			buildSA("cert-manager", "seam-system"),
+		).
+		Build()
+
+	runnable := newThirdPartyRunnable(cl)
+	if err := runnable.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// No profile should be created — all matching SAs are in system namespaces.
+	profileList := &securityv1alpha1.RBACProfileList{}
+	if err := cl.List(context.Background(), profileList); err != nil {
+		t.Fatalf("list RBACProfiles: %v", err)
+	}
+	if len(profileList.Items) != 0 {
+		t.Errorf("expected 0 RBACProfiles when all matching SAs are in system namespaces, got %d",
+			len(profileList.Items))
 	}
 }
 
@@ -247,11 +325,10 @@ func TestThirdPartyProfiles_ResourcesInComponentNamespace(t *testing.T) {
 // before the completion flag is set.
 func TestThirdPartyProfiles_SweepDoneSetAfterProfileCreation(t *testing.T) {
 	scheme := buildSweepScheme(t)
-	// Register rbac types so the sweep can list them without error.
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "metallb-system"}},
+			buildSA("metallb-controller", "metallb-system"),
 		).
 		Build()
 
@@ -281,9 +358,43 @@ func TestThirdPartyProfiles_SweepDoneSetAfterProfileCreation(t *testing.T) {
 	}
 }
 
+// TestThirdPartyProfiles_ResourcesNotInSeamSystem verifies that third-party profile
+// resources created for kueue land in its discovered namespace, not in seam-system.
+func TestThirdPartyProfiles_ResourcesNotInSeamSystem(t *testing.T) {
+	scheme := buildSweepScheme(t)
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			buildSA("kueue-controller-manager", "kueue-system"),
+		).
+		Build()
+
+	runnable := newThirdPartyRunnable(cl)
+	if err := runnable.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Nothing in seam-system from this run.
+	psList := &securityv1alpha1.PermissionSetList{}
+	if err := cl.List(context.Background(), psList, client.InNamespace("seam-system")); err != nil {
+		t.Fatalf("list seam-system PermissionSets: %v", err)
+	}
+	if len(psList.Items) != 0 {
+		t.Errorf("expected 0 PermissionSets in seam-system from sweep, got %d", len(psList.Items))
+	}
+
+	// kueue-system must have the profile.
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := cl.Get(context.Background(),
+		client.ObjectKey{Namespace: "kueue-system", Name: "rbac-kueue"},
+		profile,
+	); err != nil {
+		t.Errorf("RBACProfile rbac-kueue not in kueue-system: %v", err)
+	}
+}
+
 // Compile-time guard: BootstrapAnnotationRunnable must expose SweepDone and Client
-// as exported fields for test construction. This var ensures the struct is used
-// with the correct field names and types — any rename will fail to compile.
+// as exported fields for test construction.
 var _ = controller.BootstrapAnnotationRunnable{
 	Client:    nil,
 	SweepDone: nil,

@@ -14,62 +14,72 @@ import (
 )
 
 // thirdPartyComponent describes a third-party component that Guardian wraps
-// at bootstrap time. Guardian creates a baseline PermissionSet, RBACPolicy,
-// and RBACProfile in the component's canonical namespace.
+// at bootstrap time. The component namespace is NOT hardcoded — it is
+// discovered at runtime by finding the ServiceAccountName across all
+// non-system namespaces. This handles arbitrary install namespaces.
 // guardian-schema.md §6, CS-INV-007.
 type thirdPartyComponent struct {
-	Name              string
-	Namespace         string
-	PrincipalRef      string
+	// Name is the human-readable component identifier used in log messages
+	// and as the ontai.dev/component label value.
+	Name string
+
+	// ServiceAccountName is the well-known SA name that the component creates
+	// in its install namespace. Used to discover the actual namespace at runtime.
+	// Must be unique enough to avoid false matches; see NamespaceHint for
+	// disambiguation when multiple namespaces carry the same SA name.
+	ServiceAccountName string
+
+	// NamespaceHint is the conventional install namespace for this component.
+	// Used only as a tiebreaker when ServiceAccountName matches SAs in multiple
+	// non-system namespaces. Empty means: accept the first match found.
+	NamespaceHint string
+
+	// ProfileName, PolicyName, PermissionSetName are the CR names created in
+	// the discovered namespace.
 	ProfileName       string
 	PolicyName        string
 	PermissionSetName string
 }
 
-// managementThirdPartyComponents is the static list of third-party components
+// managementThirdPartyComponents is the catalog of third-party components
 // Guardian wraps on the management cluster after the bootstrap annotation sweep.
-// Cilium is excluded: kube-system is sweep-exempt and Cilium's cluster-scoped
-// RBAC does not reside in a component-owned namespace.
+// Namespaces are discovered at runtime via ServiceAccountName — never hardcoded.
 var managementThirdPartyComponents = []thirdPartyComponent{
 	{
-		Name:              "cert-manager",
-		Namespace:         "cert-manager",
-		PrincipalRef:      "system:serviceaccount:cert-manager:cert-manager",
-		ProfileName:       "rbac-cert-manager",
-		PolicyName:        "cert-manager-rbac-policy",
-		PermissionSetName: "cert-manager-baseline",
+		Name:               "cert-manager",
+		ServiceAccountName: "cert-manager",
+		NamespaceHint:      "cert-manager",
+		ProfileName:        "rbac-cert-manager",
+		PolicyName:         "cert-manager-rbac-policy",
+		PermissionSetName:  "cert-manager-baseline",
 	},
 	{
-		Name:              "kueue",
-		Namespace:         "kueue-system",
-		PrincipalRef:      "system:serviceaccount:kueue-system:kueue-controller-manager",
-		ProfileName:       "rbac-kueue",
-		PolicyName:        "kueue-rbac-policy",
-		PermissionSetName: "kueue-baseline",
+		Name:               "kueue",
+		ServiceAccountName: "kueue-controller-manager",
+		ProfileName:        "rbac-kueue",
+		PolicyName:         "kueue-rbac-policy",
+		PermissionSetName:  "kueue-baseline",
 	},
 	{
-		Name:              "cnpg",
-		Namespace:         "security-system",
-		PrincipalRef:      "system:serviceaccount:security-system:cloudnative-pg",
-		ProfileName:       "rbac-cnpg",
-		PolicyName:        "cnpg-rbac-policy",
-		PermissionSetName: "cnpg-baseline",
+		Name:               "cnpg",
+		ServiceAccountName: "cnpg-manager",
+		ProfileName:        "rbac-cnpg",
+		PolicyName:         "cnpg-rbac-policy",
+		PermissionSetName:  "cnpg-baseline",
 	},
 	{
-		Name:              "metallb",
-		Namespace:         "metallb-system",
-		PrincipalRef:      "system:serviceaccount:metallb-system:controller",
-		ProfileName:       "rbac-metallb",
-		PolicyName:        "metallb-rbac-policy",
-		PermissionSetName: "metallb-baseline",
+		Name:               "metallb",
+		ServiceAccountName: "metallb-controller",
+		ProfileName:        "rbac-metallb",
+		PolicyName:         "metallb-rbac-policy",
+		PermissionSetName:  "metallb-baseline",
 	},
 	{
-		Name:              "local-path-provisioner",
-		Namespace:         "local-path-storage",
-		PrincipalRef:      "system:serviceaccount:local-path-storage:local-path-provisioner",
-		ProfileName:       "rbac-local-path-provisioner",
-		PolicyName:        "local-path-provisioner-rbac-policy",
-		PermissionSetName: "local-path-provisioner-baseline",
+		Name:               "local-path-provisioner",
+		ServiceAccountName: "local-path-provisioner-service-account",
+		ProfileName:        "rbac-local-path-provisioner",
+		PolicyName:         "local-path-provisioner-rbac-policy",
+		PermissionSetName:  "local-path-provisioner-baseline",
 	},
 }
 
@@ -94,13 +104,15 @@ var baselinePermissions = []securityv1alpha1.PermissionRule{
 }
 
 // createThirdPartyProfiles creates baseline PermissionSet, RBACPolicy, and
-// RBACProfile for each third-party component in its canonical namespace.
+// RBACProfile for each third-party component in its discovered namespace.
 //
 // Behaviour:
-//   - Components whose namespace does not exist are skipped silently.
+//   - Component namespace is discovered by finding ServiceAccountName across
+//     all non-system namespaces — no namespace is hardcoded in the catalog.
+//   - Components whose SA cannot be found are skipped silently.
 //   - Each resource is created only if absent (idempotent: runs safely on restart).
 //   - Creation order within each component: PermissionSet first, RBACPolicy second,
-//     RBACProfile last — the profile requires both to be present for reconciliation.
+//     RBACProfile last — the profile requires both for reconciliation.
 //
 // Called by BootstrapAnnotationRunnable.Start after the annotation sweep completes,
 // before SweepDone is set to true. guardian-schema.md §3 Step 2.
@@ -108,34 +120,91 @@ func (r *BootstrapAnnotationRunnable) createThirdPartyProfiles(ctx context.Conte
 	log := ctrl.Log.WithName("bootstrap-third-party-profiles")
 
 	for _, comp := range managementThirdPartyComponents {
-		ns := &corev1.Namespace{}
-		if err := r.Client.Get(ctx, client.ObjectKey{Name: comp.Namespace}, ns); err != nil {
-			if apierrors.IsNotFound(err) {
-				log.Info("skipping component: namespace not found",
-					"component", comp.Name, "namespace", comp.Namespace)
-				continue
-			}
-			return fmt.Errorf("third-party profiles: check namespace %q: %w", comp.Namespace, err)
+		ns, principalRef, found := r.discoverComponentNamespace(ctx, comp)
+		if !found {
+			log.Info("skipping component: ServiceAccount not found in any non-system namespace",
+				"component", comp.Name, "serviceAccount", comp.ServiceAccountName)
+			continue
 		}
 
-		if err := r.ensureComponentPermissionSet(ctx, comp); err != nil {
+		if err := r.ensureComponentPermissionSet(ctx, ns, comp); err != nil {
 			return fmt.Errorf("third-party profiles: PermissionSet for %q: %w", comp.Name, err)
 		}
-		if err := r.ensureComponentRBACPolicy(ctx, comp); err != nil {
+		if err := r.ensureComponentRBACPolicy(ctx, ns, comp); err != nil {
 			return fmt.Errorf("third-party profiles: RBACPolicy for %q: %w", comp.Name, err)
 		}
-		if err := r.ensureComponentRBACProfile(ctx, comp); err != nil {
+		if err := r.ensureComponentRBACProfile(ctx, ns, principalRef, comp); err != nil {
 			return fmt.Errorf("third-party profiles: RBACProfile for %q: %w", comp.Name, err)
 		}
 
-		log.Info("third-party component wrapped", "component", comp.Name, "namespace", comp.Namespace)
+		log.Info("third-party component wrapped", "component", comp.Name, "namespace", ns)
 	}
 	return nil
 }
 
-func (r *BootstrapAnnotationRunnable) ensureComponentPermissionSet(ctx context.Context, comp thirdPartyComponent) error {
+// discoverComponentNamespace finds the namespace where the component is installed
+// by listing all ServiceAccounts across all non-system namespaces and matching
+// by the component's ServiceAccountName. Returns the namespace, principalRef,
+// and whether the component was found.
+//
+// When multiple non-system namespaces contain an SA with the same name, the
+// NamespaceHint is used to prefer the conventional install namespace.
+func (r *BootstrapAnnotationRunnable) discoverComponentNamespace(
+	ctx context.Context,
+	comp thirdPartyComponent,
+) (ns, principalRef string, found bool) {
+	saList := &corev1.ServiceAccountList{}
+	if err := r.Client.List(ctx, saList); err != nil {
+		return "", "", false
+	}
+
+	var candidates []string
+	for _, sa := range saList.Items {
+		if sa.Name == comp.ServiceAccountName && !isThirdPartySystemNamespace(sa.Namespace) {
+			candidates = append(candidates, sa.Namespace)
+		}
+	}
+
+	switch len(candidates) {
+	case 0:
+		return "", "", false
+	case 1:
+		ns = candidates[0]
+	default:
+		// Multiple matches: prefer the hint namespace if present.
+		ns = candidates[0]
+		for _, c := range candidates {
+			if c == comp.NamespaceHint {
+				ns = c
+				break
+			}
+		}
+		ctrl.Log.WithName("bootstrap-third-party-profiles").Info(
+			"multiple namespaces match SA name — using preferred",
+			"component", comp.Name, "serviceAccount", comp.ServiceAccountName,
+			"matches", candidates, "selected", ns,
+		)
+	}
+
+	principalRef = fmt.Sprintf("system:serviceaccount:%s:%s", ns, comp.ServiceAccountName)
+	return ns, principalRef, true
+}
+
+// isThirdPartySystemNamespace returns true for namespaces that must be excluded
+// from the third-party component discovery scan. Kubernetes system namespaces
+// and Seam platform namespaces must not be treated as component install targets.
+func isThirdPartySystemNamespace(ns string) bool {
+	switch ns {
+	case "kube-system", "kube-public", "kube-node-lease",
+		"ont-system", "seam-system":
+		return true
+	}
+	return false
+}
+
+func (r *BootstrapAnnotationRunnable) ensureComponentPermissionSet(ctx context.Context, ns string, comp thirdPartyComponent) error {
 	existing := &securityv1alpha1.PermissionSet{}
-	err := r.Client.Get(ctx, client.ObjectKey{Namespace: comp.Namespace, Name: comp.PermissionSetName}, existing)
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: comp.PermissionSetName}, existing)
 	if err == nil {
 		return nil
 	}
@@ -144,7 +213,7 @@ func (r *BootstrapAnnotationRunnable) ensureComponentPermissionSet(ctx context.C
 	}
 	ps := &securityv1alpha1.PermissionSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: comp.Namespace,
+			Namespace: ns,
 			Name:      comp.PermissionSetName,
 			Labels: map[string]string{
 				"ontai.dev/managed-by":          "guardian",
@@ -160,9 +229,9 @@ func (r *BootstrapAnnotationRunnable) ensureComponentPermissionSet(ctx context.C
 	return r.Client.Create(ctx, ps)
 }
 
-func (r *BootstrapAnnotationRunnable) ensureComponentRBACPolicy(ctx context.Context, comp thirdPartyComponent) error {
+func (r *BootstrapAnnotationRunnable) ensureComponentRBACPolicy(ctx context.Context, ns string, comp thirdPartyComponent) error {
 	existing := &securityv1alpha1.RBACPolicy{}
-	err := r.Client.Get(ctx, client.ObjectKey{Namespace: comp.Namespace, Name: comp.PolicyName}, existing)
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: comp.PolicyName}, existing)
 	if err == nil {
 		return nil
 	}
@@ -171,7 +240,7 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACPolicy(ctx context.Cont
 	}
 	policy := &securityv1alpha1.RBACPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: comp.Namespace,
+			Namespace: ns,
 			Name:      comp.PolicyName,
 			Labels: map[string]string{
 				"ontai.dev/managed-by": "guardian",
@@ -187,9 +256,9 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACPolicy(ctx context.Cont
 	return r.Client.Create(ctx, policy)
 }
 
-func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Context, comp thirdPartyComponent) error {
+func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Context, ns, principalRef string, comp thirdPartyComponent) error {
 	existing := &securityv1alpha1.RBACProfile{}
-	err := r.Client.Get(ctx, client.ObjectKey{Namespace: comp.Namespace, Name: comp.ProfileName}, existing)
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: comp.ProfileName}, existing)
 	if err == nil {
 		return nil
 	}
@@ -198,7 +267,7 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Con
 	}
 	profile := &securityv1alpha1.RBACProfile{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: comp.Namespace,
+			Namespace: ns,
 			Name:      comp.ProfileName,
 			Labels: map[string]string{
 				"ontai.dev/managed-by":        "guardian",
@@ -207,7 +276,7 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Con
 			},
 		},
 		Spec: securityv1alpha1.RBACProfileSpec{
-			PrincipalRef:   comp.PrincipalRef,
+			PrincipalRef:   principalRef,
 			TargetClusters: []string{"management"},
 			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
 				{
