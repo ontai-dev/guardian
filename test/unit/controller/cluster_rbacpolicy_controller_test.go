@@ -8,6 +8,9 @@
 //   - On TalosCluster deletion: all component-labeled RBACProfiles deleted, then
 //     cluster objects deleted, then finalizer removed.
 //   - cluster-maximum permissions are copied from management-maximum (Layer 1 obligation).
+//   - When management-maximum changes, cluster-maximum is updated to match (re-sync path).
+//   - enqueueAllTalosClusters returns a request for every TalosCluster (fanout for
+//     management-maximum change events). guardian-schema.md §18.
 //
 // guardian-schema.md §18, §19, CS-INV-008, CS-INV-009.
 package controller_test
@@ -296,4 +299,84 @@ func TestClusterRBACPolicyReconciler_DeleteCascadesComponentProfiles(t *testing.
 	}
 	// If IsNotFound: the object was garbage-collected by the fake client after
 	// the last finalizer was removed. This is the expected happy path.
+}
+
+// TestClusterRBACPolicyReconciler_SyncsClusterMaximumWhenManagementMaximumChanges
+// verifies the re-validation path: if management-maximum permissions change after
+// cluster-maximum was already provisioned, the next reconcile updates cluster-maximum
+// to match the new fleet ceiling. guardian-schema.md §18.
+func TestClusterRBACPolicyReconciler_SyncsClusterMaximumWhenManagementMaximumChanges(t *testing.T) {
+	tc := newTalosClusterForRBACTest("resync")
+	c := buildClusterRBACClient(t, tc)
+	r := &controller.ClusterRBACPolicyReconciler{Client: c, Scheme: buildClusterRBACScheme(t)}
+
+	// First reconcile: cluster-maximum is created with the original management-maximum.
+	reconcileClusterRBAC(t, r, "resync")
+
+	ns := "seam-tenant-resync"
+	clusterMax := &securityv1alpha1.PermissionSet{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name: "cluster-maximum", Namespace: ns,
+	}, clusterMax); err != nil {
+		t.Fatalf("cluster-maximum not found after first reconcile: %v", err)
+	}
+	if len(clusterMax.Spec.Permissions) != 1 {
+		t.Fatalf("expected 1 permission rule initially; got %d", len(clusterMax.Spec.Permissions))
+	}
+
+	// Simulate management-maximum being tightened: add a second rule.
+	mgmtMax := &securityv1alpha1.PermissionSet{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name: "management-maximum", Namespace: "seam-system",
+	}, mgmtMax); err != nil {
+		t.Fatalf("get management-maximum: %v", err)
+	}
+	updatedMgmt := mgmtMax.DeepCopy()
+	updatedMgmt.Spec.Permissions = append(updatedMgmt.Spec.Permissions, securityv1alpha1.PermissionRule{
+		APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []securityv1alpha1.Verb{"get"},
+	})
+	if err := c.Update(context.Background(), updatedMgmt); err != nil {
+		t.Fatalf("update management-maximum: %v", err)
+	}
+
+	// Second reconcile: cluster-maximum must be updated to match the new management-maximum.
+	reconcileClusterRBAC(t, r, "resync")
+
+	syncedMax := &securityv1alpha1.PermissionSet{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name: "cluster-maximum", Namespace: ns,
+	}, syncedMax); err != nil {
+		t.Fatalf("cluster-maximum not found after re-sync reconcile: %v", err)
+	}
+	if len(syncedMax.Spec.Permissions) != 2 {
+		t.Errorf("cluster-maximum permissions after re-sync: got %d rules, want 2",
+			len(syncedMax.Spec.Permissions))
+	}
+}
+
+// TestClusterRBACPolicyReconciler_EnqueueAllTalosClusters verifies that the fanout
+// function returns one reconcile request per InfrastructureTalosCluster in seam-system.
+// This is the function called when management-maximum changes. guardian-schema.md §18.
+func TestClusterRBACPolicyReconciler_EnqueueAllTalosClusters(t *testing.T) {
+	tc1 := newTalosClusterForRBACTest("alpha")
+	tc2 := newTalosClusterForRBACTest("beta")
+	c := buildClusterRBACClient(t, tc1, tc2)
+	r := &controller.ClusterRBACPolicyReconciler{Client: c, Scheme: buildClusterRBACScheme(t)}
+
+	// Simulate the enqueue triggered by a management-maximum change.
+	reqs := r.EnqueueAllTalosClusters(context.Background(), managementMaximumPermSet())
+
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 reconcile requests (one per TalosCluster); got %d", len(reqs))
+	}
+	names := map[string]bool{}
+	for _, req := range reqs {
+		names[req.Name] = true
+	}
+	if !names["alpha"] {
+		t.Error("expected request for TalosCluster alpha")
+	}
+	if !names["beta"] {
+		t.Error("expected request for TalosCluster beta")
+	}
 }

@@ -7,16 +7,20 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	seamv1alpha1 "github.com/ontai-dev/seam-core/api/v1alpha1"
@@ -80,12 +84,41 @@ type ClusterRBACPolicyReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// SetupWithManager registers the reconciler to watch InfrastructureTalosCluster.
+// SetupWithManager registers two watch sources:
+//  1. InfrastructureTalosCluster -- primary trigger for cluster RBAC provisioning.
+//  2. management-maximum PermissionSet -- when its content changes, all TalosCluster
+//     CRs are re-queued so cluster-maximum syncs to the updated fleet ceiling.
+//     guardian-schema.md §18: "Re-validation occurs whenever management-maximum changes."
 func (r *ClusterRBACPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&seamv1alpha1.InfrastructureTalosCluster{}).
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
+		Watches(
+			&securityv1alpha1.PermissionSet{},
+			handler.EnqueueRequestsFromMapFunc(r.EnqueueAllTalosClusters),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return obj.GetName() == ManagementMaximumPermSetName &&
+					obj.GetNamespace() == ManagementNamespace
+			})),
+		).
 		Complete(r)
+}
+
+// EnqueueAllTalosClusters returns reconcile requests for every InfrastructureTalosCluster
+// in seam-system. Invoked when management-maximum changes so every cluster-maximum is
+// validated and synced to the new fleet ceiling. Exported for unit testing. §18.
+func (r *ClusterRBACPolicyReconciler) EnqueueAllTalosClusters(ctx context.Context, _ client.Object) []reconcile.Request {
+	list := &seamv1alpha1.InfrastructureTalosClusterList{}
+	if err := r.Client.List(ctx, list, client.InNamespace(ManagementNamespace)); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, len(list.Items))
+	for i, tc := range list.Items {
+		reqs[i] = reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: tc.Name, Namespace: tc.Namespace},
+		}
+	}
+	return reqs
 }
 
 // Reconcile implements the reconciliation loop for ClusterRBACPolicyReconciler.
@@ -132,21 +165,36 @@ func (r *ClusterRBACPolicyReconciler) reconcileCreate(ctx context.Context, tc *s
 		LabelKeyPolicyType: LabelValuePolicyTypeCluster,
 	}
 
-	// Step 2: create cluster-maximum PermissionSet if absent.
-	// Initially broad ceiling (matching management-maximum); tightened post-bootstrap.
-	ps := &securityv1alpha1.PermissionSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ClusterMaximumPermSetName,
-			Namespace: ns,
-			Labels:    clusterLabels,
-		},
-		Spec: securityv1alpha1.PermissionSetSpec{
-			Description: "Cluster permission ceiling for " + tc.Name,
-			Permissions: mgmtMax.Spec.Permissions,
-		},
-	}
-	if err := r.Client.Create(ctx, ps); err != nil && !apierrors.IsAlreadyExists(err) {
-		return ctrl.Result{}, fmt.Errorf("create cluster-maximum PermissionSet in %s: %w", ns, err)
+	// Step 2: create or update cluster-maximum PermissionSet.
+	// If it already exists with diverged permissions (management-maximum was updated),
+	// sync it to the current fleet ceiling. This is the re-validation path triggered
+	// by the management-maximum watch. guardian-schema.md §18, CS-INV-009.
+	existingPS := &securityv1alpha1.PermissionSet{}
+	if getErr := r.Client.Get(ctx, types.NamespacedName{Name: ClusterMaximumPermSetName, Namespace: ns}, existingPS); getErr != nil {
+		if !apierrors.IsNotFound(getErr) {
+			return ctrl.Result{}, fmt.Errorf("get cluster-maximum PermissionSet in %s: %w", ns, getErr)
+		}
+		ps := &securityv1alpha1.PermissionSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ClusterMaximumPermSetName,
+				Namespace: ns,
+				Labels:    clusterLabels,
+			},
+			Spec: securityv1alpha1.PermissionSetSpec{
+				Description: "Cluster permission ceiling for " + tc.Name,
+				Permissions: mgmtMax.Spec.Permissions,
+			},
+		}
+		if err := r.Client.Create(ctx, ps); err != nil && !apierrors.IsAlreadyExists(err) {
+			return ctrl.Result{}, fmt.Errorf("create cluster-maximum PermissionSet in %s: %w", ns, err)
+		}
+	} else if !reflect.DeepEqual(existingPS.Spec.Permissions, mgmtMax.Spec.Permissions) {
+		updated := existingPS.DeepCopy()
+		updated.Spec.Permissions = mgmtMax.Spec.Permissions
+		if err := r.Client.Update(ctx, updated); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update cluster-maximum PermissionSet in %s: %w", ns, err)
+		}
+		logger.Info("synced cluster-maximum to management-maximum", "cluster", tc.Name, "namespace", ns)
 	}
 
 	// Step 3: create cluster-policy RBACPolicy if absent.
