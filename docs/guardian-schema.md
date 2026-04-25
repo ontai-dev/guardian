@@ -42,15 +42,23 @@ PermissionSnapshotReceipt on all target clusters regardless of Guardian presence
 
 ## 2. Namespace Placement
 
-| Resource                   | Namespace                              |
-|----------------------------|----------------------------------------|
-| RBACPolicy                 | security-system (platform-admin only)  |
-| RBACProfile                | tenant-{cluster-name}                  |
-| IdentityBinding            | tenant namespace                       |
-| PermissionSet              | security-system                        |
-| PermissionSnapshot         | security-system (internal)             |
-| CNPG cluster               | security-system                        |
-| PermissionSnapshotReceipt  | ont-system on target cluster           |
+| Resource                   | Namespace                                             |
+|----------------------------|-------------------------------------------------------|
+| RBACPolicy (Seam ops)      | seam-system (platform-admin only)                     |
+| RBACPolicy (third-party)   | {component-namespace} (e.g. cert-manager, kueue-system) |
+| RBACProfile (Seam ops)     | seam-system                                           |
+| RBACProfile (third-party)  | {component-namespace} (e.g. cert-manager, kueue-system) |
+| IdentityBinding            | tenant namespace                                      |
+| PermissionSet (Seam ops)   | seam-system                                           |
+| PermissionSet (third-party)| {component-namespace}                                 |
+| PermissionSnapshot         | security-system (internal)                            |
+| CNPG cluster               | security-system                                       |
+| PermissionSnapshotReceipt  | ont-system on target cluster                          |
+
+Third-party component resources (RBACPolicy, PermissionSet, RBACProfile) are
+created by Guardian's bootstrap annotation sweep runnable in the component's own
+namespace. RBACProfileReconciler requires the governing RBACPolicy to be in the
+same namespace as the RBACProfile.
 
 ---
 
@@ -73,16 +81,39 @@ holds in degraded state - all controller reconciliation is suspended, no crash o
 Guardian recovers automatically when CNPG becomes reachable and the migration runner
 completes successfully. This is the only blocking gate before controller registration.
 
-**Step 2 - Bootstrap RBAC provisioning:**
-After the migration runner completes, Guardian provisions its own RBACProfile from the
-bootstrap RBACPolicy (compiled into git at compile time), CNPG's RBAC, cert-manager's
-RBAC, Kueue's RBAC, metallb's RBAC. All state written to CRD status and CNPG. The
-conductor enable phase installs these components in this window with their RBAC already
-provisioned by guardian before installation begins.
+**Step 2 - Bootstrap annotation sweep and third-party profile creation:**
+After the migration runner completes, the bootstrap annotation sweep runnable starts.
+It runs in two phases:
 
-**Step 3 - Controller registration:**
+Phase 2a - Annotation sweep: All pre-existing RBAC resources (Roles, RoleBindings,
+ClusterRoles, ClusterRoleBindings, ServiceAccounts) across all non-exempt namespaces
+are stamped with `ontai.dev/rbac-owner=guardian` and
+`ontai.dev/rbac-enforcement-mode=audit`. This phase runs in audit mode -- RBAC changes
+are logged but not rejected. kube-system is always skipped. The sweep is idempotent.
+
+Phase 2b - Third-party profile creation: Immediately after the sweep completes,
+Guardian creates baseline PermissionSet, RBACPolicy, and RBACProfile for each
+third-party component whose namespace exists on the cluster. Resources are created
+in the component's canonical namespace (cert-manager, kueue-system, security-system,
+metallb-system, local-path-storage). Cilium is excluded -- kube-system is
+sweep-exempt. If a component namespace is absent, that component is skipped silently.
+This creation is idempotent -- existing resources are left unchanged.
+
+Once both phases complete, `SweepDone` is set to true.
+
+**Step 3 - Controller registration and enforcement mode transition:**
 All role-gated controllers register (see §15 for the role=management controller set).
 The admission webhook becomes operational. The bootstrap RBAC window closes.
+
+BootstrapController monitors all RBACProfiles across all namespaces. Once all
+profiles (Seam operator profiles in seam-system plus third-party profiles in their
+component namespaces) reach `provisioned=true`, WebhookMode advances:
+Initialising -> ObserveOnly -> Enforcing.
+
+In Enforcing mode, any RBAC resource created or updated without
+`ontai.dev/rbac-owner=guardian` is rejected at admission. All RBAC changes must go
+through Guardian. The only path for a third-party component to change its RBAC
+after this point is through an updated RBACProfile.
 
 If the management cluster is rebuilt, all three steps re-execute in order. The migration
 runner is idempotent - it applies only unapplied migrations and is safe to re-run.
@@ -152,16 +183,28 @@ RBAC from guardian before its controller starts. The RBACProfile gate (provision
 blocks all operator controllers until guardian has validated and provisioned their
 permission declarations. INV-003.
 
-**RBACProfile authorship - `compiler component`:**
-Guardian's admission webhook enforces what RBACProfiles declare. It never generates
-RBACProfiles and never guesses what a third-party component needs. The authorship
-path for all third-party component RBACProfiles is exclusively `compiler component`:
-the Compiler subcommand that emits RBACProfile CRs from an embedded versioned catalog
-(Cilium, CNPG, Kueue, cert-manager, local-path-provisioner) or from a human-provided
-descriptor for unlisted components. `compiler component` is a prerequisite for any
-third-party component operating in a Guardian-governed cluster. No third-party component
-may operate without a Guardian-provisioned RBACProfile, and no RBACProfile is authored
-at runtime - only at compile time. See conductor-schema.md §16.
+**RBACProfile authorship - automatic bootstrap creation:**
+Guardian automatically creates baseline PermissionSet, RBACPolicy, and RBACProfile
+for known third-party components (cert-manager, kueue, CNPG, metallb,
+local-path-provisioner) as part of Phase 2b of the bootstrap sequence. Resources are
+created in the component's canonical namespace immediately after the annotation sweep
+completes and before SweepDone is set. This is Guardian's authoritative bootstrap
+path for its known component catalog.
+
+Baseline PermissionSets grant broad access (`*/*` with all standard verbs) during
+the bootstrap phase. Post-bootstrap, operators may submit updated RBACProfiles with
+tighter PermissionSets to reduce to least-privilege.
+
+For components not in Guardian's static catalog, `compiler component` remains the
+authorship path. See conductor-schema.md §16.
+
+**Enforcement boundary:**
+During the annotation sweep (Phase 2a), enforcement mode is audit: RBAC changes
+are logged but not rejected. Once all third-party profiles reach Provisioned=True
+and WebhookMode advances to Enforcing, any RBAC resource created or updated without
+`ontai.dev/rbac-owner=guardian` is rejected at admission. The only path for a
+component to change its RBAC after this point is through an updated RBACProfile
+submitted to Guardian.
 
 **Seam operator RBACProfiles:**
 The first-class platform-owned RBACProfiles for Seam operator service accounts
