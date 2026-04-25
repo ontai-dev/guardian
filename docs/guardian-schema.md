@@ -157,9 +157,33 @@ management cluster is temporarily unreachable - the conductor serves decisions
 from its local acknowledged snapshot state.
 
 The webhook behavior is identical on management and target clusters: any RBAC
-resource lacking the ontai.dev/rbac-owner=guardian annotation is rejected.
-The implementation in conductor shares the webhook logic package from the shared
-library.
+resource lacking the `ontai.dev/rbac-owner=guardian` annotation is rejected.
+
+**Tenant cluster bootstrap sweep (Conductor role=tenant):**
+Conductor role=tenant mirrors this enforcement model independently. On leader
+election it runs `TenantBootstrapSweep` in two phases:
+
+Phase 1 (annotation sweep): stamps `ontai.dev/rbac-owner=guardian` on all
+pre-existing RBAC resources (Role, ClusterRole, RoleBinding, ClusterRoleBinding,
+ServiceAccount) using the same annotation constants as Guardian. Enforcement mode
+during this phase is audit -- resources lacking the annotation are logged but
+admitted.
+
+Phase 2 (profile creation): creates PermissionSet, RBACPolicy, and RBACProfile
+for each component in its known catalog (cert-manager, kueue, cnpg, metallb,
+local-path-provisioner) via the dynamic client in the component's canonical namespace.
+Components whose namespace is absent are skipped and retried on the next periodic
+run. If Guardian's security CRDs are not installed on the tenant cluster, the profile
+creation phase is skipped entirely and the enforcement gate remains in audit mode.
+
+After both phases complete, the `EnforcementGate` transitions to strict mode and
+the admission webhook at `/validate/rbac-ownership` begins rejecting unannotated
+RBAC resources. The sweep repeats every 5 minutes so newly deployed Helm charts are
+picked up without restart.
+
+Annotation constants (`ontai.dev/rbac-owner=guardian`) are defined in both Guardian
+and Conductor independently -- Conductor does not import Guardian internal packages.
+Both use identical string literals. CS-INV-001, conductor-schema.md §15.
 
 ---
 
