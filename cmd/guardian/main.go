@@ -71,6 +71,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Read MANAGEMENT_CLUSTER_NAME — the name of this management cluster, used to
+	// compute seam-tenant-{name} when placing third-party RBACProfiles.
+	// Defaults to "ccs-mgmt" for backwards compatibility with the bootstrap bundle.
+	managementClusterName := os.Getenv("MANAGEMENT_CLUSTER_NAME")
+	if managementClusterName == "" {
+		managementClusterName = "ccs-mgmt"
+	}
+
 	var (
 		metricsAddr          string
 		healthProbeAddr      string
@@ -254,9 +262,10 @@ func main() {
 	// completion via sweepDone, unblocking BootstrapController from advancing
 	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
 	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
-		Client:      mgr.GetClient(),
-		SweepDone:   sweepDone,
-		AuditWriter: auditWriter,
+		Client:                mgr.GetClient(),
+		SweepDone:             sweepDone,
+		AuditWriter:           auditWriter,
+		ManagementClusterName: managementClusterName,
 	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)

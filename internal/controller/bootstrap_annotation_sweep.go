@@ -84,6 +84,10 @@ type BootstrapAnnotationRunnable struct {
 	SweepDone   *atomic.Bool
 	// AuditWriter receives the sweep-complete audit event. Nil is safe.
 	AuditWriter database.AuditWriter
+	// ManagementClusterName is the name of the management cluster, e.g. "ccs-mgmt".
+	// Used to compute seam-tenant-{ManagementClusterName} for third-party profiles.
+	// Required when createThirdPartyProfiles is called. Read from MANAGEMENT_CLUSTER_NAME.
+	ManagementClusterName string
 }
 
 // sweepSummary accumulates structured sweep metrics for the completion log.
