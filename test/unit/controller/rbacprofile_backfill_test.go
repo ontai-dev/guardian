@@ -63,7 +63,8 @@ func backfillClusterPolicy(ns, clusterName string) *securityv1alpha1.RBACPolicy 
 }
 
 // backfillComponentProfile creates a component-labeled RBACProfile in the given namespace.
-// provisioned controls whether the profile is already provisioned.
+// References cluster-maximum via permissionDeclarations (§19 Layer 3). No separate
+// PermissionSet per component. provisioned controls whether the profile is already provisioned.
 func backfillComponentProfile(name, ns, clusterName string, provisioned bool) *securityv1alpha1.RBACProfile {
 	p := &securityv1alpha1.RBACProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -78,6 +79,9 @@ func backfillComponentProfile(name, ns, clusterName string, provisioned bool) *s
 			PrincipalRef:   name,
 			TargetClusters: []string{clusterName},
 			RBACPolicyRef:  "cluster-policy",
+			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
+				{PermissionSetRef: "cluster-maximum", Scope: securityv1alpha1.PermissionScopeCluster},
+			},
 		},
 	}
 	p.Status.Provisioned = provisioned

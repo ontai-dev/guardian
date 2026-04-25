@@ -109,10 +109,17 @@ func EnsurePackRBACProfileCRs(ctx context.Context, c client.Client, componentNam
 				},
 			},
 			"spec": map[string]interface{}{
-				"principalRef":           componentName,
-				"targetClusters":         []interface{}{targetCluster},
-				"permissionDeclarations": []interface{}{},
-				"rbacPolicyRef":          "cluster-policy",
+				"principalRef":   componentName,
+				"targetClusters": []interface{}{targetCluster},
+				"rbacPolicyRef":  "cluster-policy",
+				// Declares permissions inline via the shared cluster ceiling (§19 Layer 3).
+				// No per-component PermissionSet exists; cluster-maximum is the sole ceiling.
+				"permissionDeclarations": []interface{}{
+					map[string]interface{}{
+						"permissionSetRef": "cluster-maximum",
+						"scope":            "cluster",
+					},
+				},
 			},
 		},
 	}

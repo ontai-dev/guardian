@@ -79,6 +79,12 @@ func TestThirdPartyProfiles_CreatesRBACProfileInTenantNamespace(t *testing.T) {
 	if got := profile.GetLabels()["ontai.dev/policy-type"]; got != "component" {
 		t.Errorf("policy-type label = %q, want component", got)
 	}
+	// permissionDeclarations must reference cluster-maximum (§19 Layer 3).
+	if len(profile.Spec.PermissionDeclarations) != 1 ||
+		profile.Spec.PermissionDeclarations[0].PermissionSetRef != "cluster-maximum" {
+		t.Errorf("permissionDeclarations: got %v, want [{cluster-maximum cluster}]",
+			profile.Spec.PermissionDeclarations)
+	}
 
 	// Must NOT be in the component's own namespace.
 	wrongProfile := &securityv1alpha1.RBACProfile{}

@@ -175,15 +175,23 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Con
 			Namespace: tenantNS,
 			Name:      comp.ProfileName,
 			Labels: map[string]string{
-				LabelKeyManagedBy:  LabelManagedByGuardian,
-				LabelKeyPolicyType: LabelValuePolicyTypeComponent,
-				"ontai.dev/component": comp.Name,
+				LabelKeyManagedBy:       LabelManagedByGuardian,
+				LabelKeyPolicyType:      LabelValuePolicyTypeComponent,
+				"ontai.dev/component":   comp.Name,
 			},
 		},
 		Spec: securityv1alpha1.RBACProfileSpec{
 			PrincipalRef:   principalRef,
 			TargetClusters: []string{r.ManagementClusterName},
 			RBACPolicyRef:  ClusterPolicyName,
+			// Declares permissions via the shared cluster ceiling (§19 Layer 3).
+			// No per-component PermissionSet exists; cluster-maximum is the sole ceiling.
+			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
+				{
+					PermissionSetRef: ClusterMaximumPermSetName,
+					Scope:            securityv1alpha1.PermissionScopeCluster,
+				},
+			},
 		},
 	}
 	return r.Client.Create(ctx, profile)
