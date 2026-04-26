@@ -905,6 +905,202 @@ be preserved in all future implementations.
 
 ---
 
+## 20. Import-Mode Tenant Cluster Onboarding
+
+This section documents the complete sequencing for admitting an existing Kubernetes
+cluster (one created outside ONT scope) into Seam governance as an import-mode tenant.
+Locked 2026-04-26. No step may be reordered without a Governor directive.
+
+---
+
+### What "import mode" means
+
+An import-mode cluster (`InfrastructureTalosCluster.spec.mode: import`) is a cluster
+that already exists and is already running. Platform does not bootstrap it, does not
+generate machine configs for it, and does not manage its Talos lifecycle. Platform severs
+management governance only on deletion (Decision H). The cluster continues to operate
+after severance; it is a divorce, not a destruction.
+
+Bootstrap-mode clusters (`spec.mode: bootstrap`) follow a different path (Platform
+provisions CAPI objects, machine configs, talosconfig). That path is documented in
+platform-schema.md. This section covers import mode exclusively.
+
+---
+
+### Step 1 - Compiler output for an import-mode cluster
+
+The compiler `import` subcommand does not exist as a standalone CLI verb. The compiler
+generates the InfrastructureTalosCluster CR as part of cluster declaration authoring.
+For an import-mode cluster the compiler output is a single CR:
+
+```yaml
+apiVersion: infrastructure.ontai.dev/v1alpha1
+kind: InfrastructureTalosCluster
+metadata:
+  name: {clusterName}
+  namespace: seam-system
+spec:
+  mode: import
+  endpoint: https://{vip}:6443
+  talosVersion: v{version}
+  lineage:
+    originRef:
+      group: infrastructure.ontai.dev
+      kind: InfrastructureTalosCluster
+      name: {clusterName}
+    rationale: ClusterImport
+```
+
+No enable bundle. No CAPI objects. No machine config. No talosconfig. The CR is the
+sole admission artifact for an import-mode cluster.
+
+---
+
+### Step 2 - Management cluster admission
+
+The human (Governor) applies the InfrastructureTalosCluster CR to seam-system.
+Guardian's admission webhook validates the CR against management-policy. Platform's
+InfrastructureTalosCluster reconciler observes the new CR.
+
+Guardian's ClusterRBACPolicyReconciler fires and creates Layer 2 objects in
+seam-tenant-{clusterName} on the management cluster:
+- `cluster-policy` (RBACPolicy) in seam-tenant-{clusterName}
+- `cluster-maximum` (PermissionSet) in seam-tenant-{clusterName}
+
+Both objects are guardian-created and validated against management-maximum at
+creation time (CS-INV-009). The management cluster is now ready to govern {clusterName}.
+
+---
+
+### Step 3 - Platform onboarding orchestration
+
+Platform's InfrastructureTalosCluster reconciler detects `spec.mode: import` and drives
+the following sequence on the management cluster and the tenant cluster. This is a
+two-site orchestration: Platform holds kubeconfig for both (provided by Governor at
+admission time, stored in seam-tenant-{clusterName} namespace as a Secret).
+
+**Management cluster side (seam-tenant-{clusterName}):**
+1. Create namespace `seam-tenant-{clusterName}` in the management cluster (CP-INV-004 --
+   Platform is the sole namespace creation authority for seam-tenant-* namespaces).
+2. Store tenant kubeconfig Secret in seam-tenant-{clusterName}.
+3. Create InfrastructureTalosCluster ownerReference on the tenant namespace (CP-INV-008).
+
+**Tenant cluster side (executed via tenant kubeconfig):**
+4. Create namespace `ont-system`.
+5. Create conductor ServiceAccount in ont-system.
+6. Create conductor Deployment (role=tenant) in ont-system.
+   - Env: `CONDUCTOR_ROLE=tenant`, `CLUSTER_ID={clusterName}`, `MGMT_ENDPOINT={mgmtGRPC}`
+   - Image: conductor agent (distroless, INV-022)
+   - Tag: `:dev` in lab/development (INV-023); `v{talosVersion}-r{revision}` in stable
+7. Create the conductor RBACProfile in ont-system (see Step 4).
+
+**Completion signal:** Platform sets `InfrastructureTalosCluster.status.phase: ConductorPending`
+when the Deployment is created. The phase advances to `Operational` when the gRPC handshake
+completes (Step 5).
+
+---
+
+### Step 4 - Conductor RBACProfile on the tenant cluster
+
+Platform creates a single RBACProfile in ont-system on the tenant cluster. This is a
+Seam operator profile (Layer 3, seam operator variant) because conductor role=tenant is
+a Seam operator component:
+
+```yaml
+apiVersion: security.ontai.dev/v1alpha1
+kind: RBACProfile
+metadata:
+  name: conductor
+  namespace: ont-system
+  labels:
+    ontai.dev/rbac-profile-type: seam-operator
+spec:
+  principalRef:
+    kind: ServiceAccount
+    name: conductor
+    namespace: ont-system
+  rbacPolicyRef:
+    name: management-policy
+    namespace: seam-system
+  permissionDeclarations:
+    - permissionSetRef:
+        name: management-maximum
+        namespace: seam-system
+```
+
+`rbacPolicyRef: management-policy` is the management cluster's fleet-level policy.
+`management-policy` is not locally present on the tenant cluster at this point; it is
+delivered via PermissionSnapshot (Step 5). The RBACProfile is created by Platform, not
+by guardian. Guardian is not deployed on import-mode tenant clusters (§1 Deployment
+boundary). The tenant conductor verifies the PermissionSnapshot signature and installs
+the management-policy locally in ont-system before the RBACProfile admission can succeed.
+
+---
+
+### Step 5 - gRPC handshake and PermissionSnapshot delivery
+
+The management conductor (role=management) and the tenant conductor (role=tenant)
+establish the governance channel over mutual-TLS gRPC. The handshake sequence is:
+
+1. Tenant conductor starts. It dials `MGMT_ENDPOINT` from its Deployment env.
+2. Management conductor accepts the connection. It validates the tenant conductor's
+   identity against the management IdentityProvider chain.
+3. Management conductor pushes the initial PermissionSnapshot to the tenant.
+   PermissionSnapshot payload includes: `management-policy`, `management-maximum`,
+   and `cluster-maximum` (the Layer 2 PermissionSet for {clusterName}).
+4. Tenant conductor verifies the guardian signature on the PermissionSnapshot.
+   On success it writes the PermissionSnapshotReceipt in ont-system.
+5. Tenant conductor installs `management-policy` and `management-maximum` in ont-system.
+   These are signed artifacts; the tenant conductor does not author them locally.
+6. Guardian admission webhook becomes functional on the tenant cluster for Seam-governed
+   resources in ont-system (Conductor is the admission webhook host on tenant clusters
+   per §5 of this schema). The conductor RBACProfile (Step 4) is admitted at this point.
+7. PermissionSnapshotReceipt is acknowledged to the management conductor.
+
+**Handshake completion:** Management conductor writes
+`InfrastructureTalosCluster.status.conductorHandshake: Acknowledged` to the management
+cluster CR. Platform observes this field and advances
+`InfrastructureTalosCluster.status.phase: Operational`.
+
+---
+
+### Step 6 - Post-onboarding steady state
+
+Once operational:
+- Tenant conductor (role=tenant) runs reconciliation and drift detection for {clusterName}.
+  It signals the management cluster when drift is detected (Decision H).
+- Management conductor (role=management) delivers PermissionSnapshot updates when
+  guardian creates or modifies cluster-policy / cluster-maximum.
+- Platform watches InfrastructureTalosCluster status and surfaces cluster health.
+- No guardian Deployment runs on the tenant cluster. All security plane responsibilities
+  (admission webhook, PermissionSnapshot receipt, local PermissionService, RBAC
+  enforcement) are hosted by the conductor Deployment in ont-system (§1).
+
+**Pack deployments** to an import-mode tenant proceed through the normal wrapper path:
+Pack intake creates a component RBACProfile in seam-tenant-{clusterName} referencing
+cluster-policy / cluster-maximum (Layer 2/3). PermissionSnapshot delivery propagates
+the updated cluster-maximum to the tenant conductor before pack workloads start.
+
+---
+
+### Severance (import-mode only)
+
+Deletion of InfrastructureTalosCluster with `spec.mode: import` triggers the management
+severance sequence (Decision H):
+
+1. Wrapper teardown on tenant: PackInstances, PackExecutions, RunnerConfigs removed.
+2. Guardian teardown on management: component RBACProfiles, PermissionSets, RBACPolicies
+   in seam-tenant-{clusterName} removed.
+3. Conductor teardown on tenant: conductor Deployment, ServiceAccount, RBACProfile,
+   PermissionSnapshotReceipt removed from ont-system. ont-system namespace removed.
+4. TalosCluster CR removed from seam-system.
+5. seam-tenant-{clusterName} namespace removed from management cluster.
+
+The tenant cluster continues to run. All workloads remain. The cluster is no longer
+governed by ONT after step 5 completes. This is a divorce, not a destruction (Decision H).
+
+---
+
 *security.ontai.dev schema - guardian*
 *Amendments appended below with date and rationale.*
 
@@ -998,3 +1194,17 @@ be preserved in all future implementations.
   specified. Management cluster dual-layer pattern documented. RBACPolicy authorship
   invariant: compiler for Layer 1, guardian reconciler for Layer 2, never human-authored.
   security-system namespace removed throughout (does not exist).
+
+2026-04-26 - §20 Import-Mode Tenant Cluster Onboarding added. Complete sequencing
+  documented for admitting an existing cluster into Seam governance: compiler generates
+  only InfrastructureTalosCluster CR (no enable bundle, no CAPI objects); guardian
+  ClusterRBACPolicyReconciler creates Layer 2 objects; Platform drives two-site
+  orchestration creating ont-system namespace and conductor Deployment (role=tenant)
+  on the tenant cluster; Platform creates conductor RBACProfile in ont-system referencing
+  management-policy / management-maximum (Seam operator profile, Layer 3 seam operator
+  variant); management conductor delivers PermissionSnapshot (management-policy,
+  management-maximum, cluster-maximum) over mTLS gRPC; tenant conductor verifies
+  guardian signature, installs signed artifacts locally, writes PermissionSnapshotReceipt;
+  handshake completion advances InfrastructureTalosCluster.status.phase to Operational.
+  Severance sequence for import-mode documented (Decision H: divorce not destruction).
+  Cross-referenced to platform-schema.md §12 and conductor-schema.md deployment contract.
