@@ -929,9 +929,14 @@ platform-schema.md. This section covers import mode exclusively.
 
 ### Step 1 - Compiler output for an import-mode cluster
 
-The compiler `import` subcommand does not exist as a standalone CLI verb. The compiler
-generates the InfrastructureTalosCluster CR as part of cluster declaration authoring.
-For an import-mode cluster the compiler output is a single CR:
+The entry point is `compiler bootstrap` with a cluster-input.yaml declaring
+`mode: import`, `role: tenant`, and `importExistingCluster: true`. There is no
+separate `compiler import` verb.
+
+The compiler `bootstrap` subcommand for an import-mode cluster with no machine config
+paths (talosconfig-only path) emits exactly two files:
+
+**{clusterName}.yaml** -- the InfrastructureTalosCluster CR:
 
 ```yaml
 apiVersion: infrastructure.ontai.dev/v1alpha1
@@ -939,20 +944,46 @@ kind: InfrastructureTalosCluster
 metadata:
   name: {clusterName}
   namespace: seam-system
+  annotations:
+    ontai.dev/owns-runnerconfig: "true"
 spec:
   mode: import
-  endpoint: https://{vip}:6443
+  role: tenant
   talosVersion: v{version}
-  lineage:
-    originRef:
-      group: infrastructure.ontai.dev
-      kind: InfrastructureTalosCluster
-      name: {clusterName}
-    rationale: ClusterImport
+  kubernetesVersion: {k8sVersion}
+  clusterEndpoint: "{vip}:6443"
 ```
 
-No enable bundle. No CAPI objects. No machine config. No talosconfig. The CR is the
-sole admission artifact for an import-mode cluster.
+`clusterEndpoint` carries the VIP and port with the URL scheme stripped
+(`stripScheme` removes `https://`). The `lineage` field is not set by the
+compiler; it is populated by the Platform reconciler at admission time.
+`kubeconfigSecretRef` is not in the CR; the kubeconfig Secret is stored
+separately in seam-tenant-{clusterName} and referenced by the Platform reconciler
+through the cluster namespace naming convention.
+
+**seam-mc-{clusterName}-talosconfig.yaml** -- the talosconfig Secret:
+
+The talosconfig Secret holds the cluster talosconfig (CA + endpoint bundle)
+used by Conductor and Platform for Talos API access. It is stored in seam-system
+and is a prerequisite for Platform to operate against the cluster's Talos API.
+
+No enable bundle. No CAPI objects. No per-node machine configs.
+
+The cluster-input.yaml that drives this output:
+
+```yaml
+name: {clusterName}
+namespace: seam-system
+mode: import
+role: tenant
+capi:
+  enabled: false
+importExistingCluster: true
+bootstrap:
+  controlPlaneEndpoint: "https://{vip}:6443"
+  talosVersion: "v{version}"
+  kubernetesVersion: "{k8sVersion}"
+```
 
 ---
 
