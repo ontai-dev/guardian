@@ -105,21 +105,13 @@ type ConnConfig struct {
 	URI string
 }
 
-// DSN returns the connection URI ready for sql.Open. Two transformations are applied:
+// DSN returns the connection URI ready for sql.Open. One transformation is applied:
 //
-//  1. Pooler bypass: replace "-pooler." with "-rw." in the host so Guardian connects
-//     directly to the CNPG primary service instead of through PgBouncer. PgBouncer
-//     caches md5 password hashes in transaction mode; after a guardian pod restart the
-//     cached hash may differ from the password in the CNPG app Secret, causing
-//     "password authentication failed" on every startup. Guardian's connection volume
-//     is low enough that the pooler adds no benefit. URIs that do not contain "-pooler."
-//     are unaffected.
-//
-//  2. SSL enforcement: append "sslmode=require" if no sslmode parameter is already
-//     present. CNPG pg_hba requires hostssl; sslmode=disable causes "pg_hba.conf
-//     rejects connection, no encryption".
+// SSL enforcement: append "sslmode=require" if no sslmode parameter is already
+// present. CNPG pg_hba requires hostssl; sslmode=disable causes "pg_hba.conf
+// rejects connection, no encryption".
 func (c ConnConfig) DSN() string {
-	uri := strings.Replace(c.URI, "-pooler.", "-rw.", 1)
+	uri := c.URI
 	if !strings.Contains(uri, "sslmode=") {
 		if strings.Contains(uri, "?") {
 			uri += "&sslmode=require"

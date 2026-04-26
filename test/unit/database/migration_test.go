@@ -576,17 +576,17 @@ func TestConnConfig_DSN(t *testing.T) {
 			expected: "postgresql://guardian:secret@cnpg-rw.seam-system.svc:5432/guardian?sslmode=verify-full",
 		},
 		{
-			// Pooler URI from CNPG app Secret: PgBouncer caches md5 hashes and
-			// causes "password authentication failed" on guardian pod restarts.
-			// DSN rewrites the host to the rw service to bypass the pooler.
-			name:     "pooler host — rewritten to rw service",
+			// Pooler bypass was removed in 2eb94af: root cause was password_encryption
+			// mismatch (SCRAM vs md5), not the pooler. Guardian goes through the pooler
+			// per CS-INV-002. Pooler host is passed through unchanged; only sslmode added.
+			name:     "pooler host — sslmode appended, host unchanged",
 			uri:      "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian",
-			expected: "postgresql://guardian:secret@guardian-cnpg-rw.seam-system.svc:5432/guardian?sslmode=require",
+			expected: "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian?sslmode=require",
 		},
 		{
-			name:     "pooler host with existing sslmode — host rewritten, sslmode preserved",
+			name:     "pooler host with existing sslmode — left unchanged",
 			uri:      "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian?sslmode=require",
-			expected: "postgresql://guardian:secret@guardian-cnpg-rw.seam-system.svc:5432/guardian?sslmode=require",
+			expected: "postgresql://guardian:secret@guardian-cnpg-pooler.seam-system.svc:5432/guardian?sslmode=require",
 		},
 	}
 	for _, tc := range tests {

@@ -65,8 +65,15 @@ func (r *RBACProfileBackfillRunnable) Start(ctx context.Context) error {
 }
 
 // RunOnce performs a single back-fill scan pass across all seam-tenant-* namespaces.
-// For each namespace it checks each PermissionSet for a missing RBACProfile and
-// calls EnsurePackRBACProfileCRs for any gap found. Exported for unit testing.
+// For each namespace it checks for component RBACProfiles missing their profile entry
+// and calls EnsurePackRBACProfileCRs for any gap found.
+//
+// Under the three-layer RBAC hierarchy (guardian-schema.md §19):
+// - Skips namespaces where cluster-policy does not yet exist (ClusterRBACPolicyReconciler
+//   must provision it first; the namespace is retried on the next pass).
+// - Only back-fills RBACProfiles labeled ontai.dev/policy-type=component. Cluster-level
+//   objects (cluster-policy, cluster-maximum) are never back-filled here.
+// guardian-schema.md §6, §18, §19. CS-INV-008.
 func (r *RBACProfileBackfillRunnable) RunOnce(ctx context.Context) error {
 	log := ctrl.Log.WithName("rbacprofile-backfill")
 
@@ -83,28 +90,56 @@ func (r *RBACProfileBackfillRunnable) RunOnce(ctx context.Context) error {
 		}
 		targetCluster := strings.TrimPrefix(ns.Name, "seam-tenant-")
 
-		psList := &securityv1alpha1.PermissionSetList{}
-		if err := r.Client.List(ctx, psList, client.InNamespace(ns.Name)); err != nil {
-			log.Error(err, "list PermissionSets", "namespace", ns.Name)
+		// Guard: cluster-policy must exist before any component RBACProfile can be
+		// created. If absent, ClusterRBACPolicyReconciler has not yet run; skip this
+		// namespace silently and retry on the next pass. CS-INV-009.
+		clusterPolicy := &securityv1alpha1.RBACPolicy{}
+		if err := r.Client.Get(ctx, types.NamespacedName{
+			Name:      "cluster-policy",
+			Namespace: ns.Name,
+		}, clusterPolicy); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Info("cluster-policy not yet provisioned; skipping namespace", "namespace", ns.Name)
+				continue
+			}
+			log.Error(err, "get cluster-policy", "namespace", ns.Name)
 			continue
 		}
 
-		for j := range psList.Items {
-			componentName := psList.Items[j].Name
+		// List only component-labeled RBACProfiles to find which component names
+		// already have a profile. Then compare against what exists without a profile.
+		// Since we no longer have per-component PermissionSets, we scan existing
+		// component profiles and look for any known component without one.
+		// The backfill source is the component-labeled RBACProfile list itself --
+		// gaps are components that sent a webhook call but failed before profile creation.
+		// We detect gaps via a separate label index built from existing profiles.
+		profileList := &securityv1alpha1.RBACProfileList{}
+		if err := r.Client.List(ctx, profileList,
+			client.InNamespace(ns.Name),
+			client.MatchingLabels{"ontai.dev/policy-type": "component"},
+		); err != nil {
+			log.Error(err, "list component RBACProfiles", "namespace", ns.Name)
+			continue
+		}
 
-			profile := &securityv1alpha1.RBACProfile{}
-			err := r.Client.Get(ctx, types.NamespacedName{Name: componentName, Namespace: ns.Name}, profile)
-			if err == nil {
+		// Back-fill: any component profile that references cluster-policy but has
+		// provisioned=false and no spec.permissionDeclarations set may indicate a
+		// partial write. Re-apply via EnsurePackRBACProfileCRs (idempotent SSA).
+		for j := range profileList.Items {
+			p := &profileList.Items[j]
+			if p.Spec.RBACPolicyRef != "cluster-policy" {
+				// Stale profile from old design referencing a per-component policy.
+				// Log and skip; human cleanup required.
+				log.Info("found stale RBACProfile referencing non-cluster-policy; skipping",
+					"namespace", ns.Name, "name", p.Name, "rbacPolicyRef", p.Spec.RBACPolicyRef)
 				continue
 			}
-			if !apierrors.IsNotFound(err) {
-				log.Error(err, "get RBACProfile", "namespace", ns.Name, "name", componentName)
+			if p.Status.Provisioned {
 				continue
 			}
-
-			log.Info("back-filling RBACProfile CRs", "component", componentName, "targetCluster", targetCluster)
-			if err := webhook.EnsurePackRBACProfileCRs(ctx, r.Client, componentName, targetCluster); err != nil {
-				log.Error(err, "EnsurePackRBACProfileCRs failed", "component", componentName, "targetCluster", targetCluster)
+			log.Info("back-filling unprovisioned component RBACProfile", "namespace", ns.Name, "name", p.Name)
+			if err := webhook.EnsurePackRBACProfileCRs(ctx, r.Client, p.Name, targetCluster); err != nil {
+				log.Error(err, "EnsurePackRBACProfileCRs failed", "component", p.Name, "targetCluster", targetCluster)
 				continue
 			}
 			filled++

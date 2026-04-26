@@ -3,11 +3,12 @@
 
 ### Schema authority
 Primary: docs/guardian-schema.md
-Supporting: ~/ontai/conductor/docs/conductor-schema.md (RunnerConfig contract)
+Supporting: ~/ontai/conductor/docs/conductor-schema.md (Conductor capabilities and job protocol)
+Supporting: ~/ontai/seam-core/docs/seam-core-schema.md (InfrastructureRunnerConfig type definition; Decision G)
 
 ### Invariants
 CS-INV-001 -- The admission webhook is the enforcement mechanism. Policy without enforcement is decoration. The webhook must be operational before any other operator is considered enabled. (root INV-003)
-CS-INV-002 -- CNPG is a guardian dependency only. No other component references or accesses the CNPG cluster in security-system. (root INV-016)
+CS-INV-002 -- CNPG is a guardian dependency only. No other component references or accesses the CNPG cluster in seam-system. (root INV-016)
 CS-INV-003 -- The two-phase boot (CRD-only to database-backed) is a named, explicit transition. It is never a silent fallback.
 CS-INV-004 -- The bootstrap RBAC window has a definite close: when the admission webhook becomes operational. The window is documented, bounded, and reconciled on startup. (root INV-020)
 CS-INV-005 -- provisioned=true on RBACProfile is set exclusively by this operator. No other controller writes to RBACProfile status.
@@ -15,6 +16,9 @@ CS-INV-006 -- Leader election required. Admission webhook requires a stable lead
 CS-INV-007 -- Third-party RBAC ownership is wrapping, not replacement. Helm upgrades must remain safe. Drift is surfaced, not silently overwritten.
 INV-005 -- ClusterAssignment references, never owns, cluster/pack/security resources.
 INV-015 -- Deletion of TalosCluster never triggers physical cluster destruction. ClusterReset is the only path to cluster destruction.
+CS-INV-008 -- Three-layer RBAC hierarchy is the authoritative governance model (guardian-schema.md §19). Layer 1: management-policy + management-maximum in seam-system, compiler-authored. Layer 2: cluster-policy + cluster-maximum in seam-tenant-{clusterName}, guardian-authored by ClusterRBACPolicyReconciler. Layer 3: component RBACProfiles only -- no per-component RBACPolicy, no per-component PermissionSet. RBACPolicy is never human-authored.
+CS-INV-009 -- Cluster-policy validation against management-maximum happens at ClusterRBACPolicyReconciler creation time (option a). Never at RBACProfile admission time. This is the deadlock-prevention invariant -- admission-time management ceiling checks are prohibited.
+CS-INV-010 -- security-system namespace does not exist in this platform. All guardian-owned objects that previously referenced security-system live in seam-system.
 
 ### Session protocol additions
 Step 4a -- Read guardian-design.md in this repository.

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 
@@ -52,6 +53,9 @@ func mustBuildSweepAnnotationPatch() []byte {
 	return b
 }
 
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=security.ontai.dev,resources=permissionsets;rbacpolicies;rbacprofiles,verbs=get;create
+
 // BootstrapAnnotationRunnable scans all pre-existing RBAC resources on the cluster
 // and stamps ownership annotations on any resource missing ontai.dev/rbac-owner=guardian.
 //
@@ -80,6 +84,10 @@ type BootstrapAnnotationRunnable struct {
 	SweepDone   *atomic.Bool
 	// AuditWriter receives the sweep-complete audit event. Nil is safe.
 	AuditWriter database.AuditWriter
+	// ManagementClusterName is the name of the management cluster, e.g. "ccs-mgmt".
+	// Used to compute seam-tenant-{ManagementClusterName} for third-party profiles.
+	// Required when createThirdPartyProfiles is called. Read from MANAGEMENT_CLUSTER_NAME.
+	ManagementClusterName string
 }
 
 // sweepSummary accumulates structured sweep metrics for the completion log.
@@ -130,6 +138,15 @@ func (r *BootstrapAnnotationRunnable) Start(ctx context.Context) error {
 		"resourcesAnnotated", summary.resourcesAnnotated,
 		"resourcesAlreadyOwned", summary.resourcesAlreadyOwned,
 	)
+
+	// After sweeping all existing RBAC, create third-party component RBACProfiles
+	// in their canonical namespaces. Once these profiles reach Provisioned=True,
+	// BootstrapController advances WebhookMode to ObserveOnly then Enforcing.
+	// Enforcement blocks RBAC changes outside Guardian scope from that point on.
+	// guardian-schema.md §3 Step 2, §6.
+	if err := r.createThirdPartyProfiles(ctx); err != nil {
+		return fmt.Errorf("bootstrap: third-party profile creation: %w", err)
+	}
 
 	r.SweepDone.Store(true)
 

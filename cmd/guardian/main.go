@@ -71,6 +71,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Read MANAGEMENT_CLUSTER_NAME — the name of this management cluster, used to
+	// compute seam-tenant-{name} when placing third-party RBACProfiles.
+	// Defaults to "ccs-mgmt" for backwards compatibility with the bootstrap bundle.
+	managementClusterName := os.Getenv("MANAGEMENT_CLUSTER_NAME")
+	if managementClusterName == "" {
+		managementClusterName = "ccs-mgmt"
+	}
+
 	var (
 		metricsAddr          string
 		healthProbeAddr      string
@@ -254,9 +262,10 @@ func main() {
 	// completion via sweepDone, unblocking BootstrapController from advancing
 	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
 	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
-		Client:      mgr.GetClient(),
-		SweepDone:   sweepDone,
-		AuditWriter: auditWriter,
+		Client:                mgr.GetClient(),
+		SweepDone:             sweepDone,
+		AuditWriter:           auditWriter,
+		ManagementClusterName: managementClusterName,
 	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)
@@ -411,8 +420,17 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 }
 
 // setupManagementControllers registers controllers that run only when role=management.
-// guardian-schema.md §15.
+// guardian-schema.md §15, §18, §19.
 func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
+	// ClusterRBACPolicyReconciler: provisions cluster-level RBACPolicy and PermissionSet
+	// for each InfrastructureTalosCluster and cascades deletion. guardian-schema.md §18.
+	if err := (&controller.ClusterRBACPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
 	if err := (&controller.PermissionSetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
