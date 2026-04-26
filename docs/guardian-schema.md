@@ -70,17 +70,19 @@ the only two authorship paths. No other controller or human may create an RBACPo
 Seam operator profiles (guardian, platform, wrapper, conductor, seam-core) are created
 by compiler enable as part of the management cluster bootstrap bundle. On the management
 cluster they live in seam-system and reference `management-policy`. On tenant clusters
-they live in ont-system and reference that tenant cluster's `cluster-policy`.
+they live in ont-system and reference `management-policy`. In both cases
+`permissionDeclarations[0].permissionSetRef` is `management-maximum`. No per-operator
+PermissionSet exists or may be created. See §19 PermissionSet global rule.
 
 **All other component RBACProfile placement:**
 Every component that is not a Seam operator -- third-party tools (cert-manager, kueue,
 metallb), pack components, and any future additions -- has its RBACProfile in
-`seam-tenant-{clusterName}` referencing that cluster's `cluster-policy`. The actual
-Kubernetes RBAC resources (Roles, ClusterRoles, RoleBindings) for these components
-live in their operational namespaces as before. Only the governance record (RBACProfile)
-moves to seam-tenant-{clusterName}. There are no per-component RBACPolicy objects and
-no per-component PermissionSet objects. The cluster-maximum PermissionSet is the sole
-ceiling for all components on that cluster.
+`seam-tenant-{clusterName}` referencing `cluster-policy`. The actual Kubernetes RBAC
+resources (Roles, ClusterRoles, RoleBindings) for these components live in their
+operational namespaces. Only the governance record (RBACProfile) lives in
+`seam-tenant-{clusterName}`. `permissionDeclarations[0].permissionSetRef` is
+`cluster-maximum`. There are no per-component RBACPolicy objects and no per-component
+PermissionSet objects anywhere in the hierarchy. See §19 PermissionSet global rule.
 
 **RBACProfileReconciler same-namespace constraint:**
 The governing RBACPolicy must be in the same namespace as the RBACProfile. This
@@ -755,92 +757,128 @@ cluster-policy or cluster-maximum pointing to TalosCluster.
 ## 19. Three-Layer RBAC Hierarchy
 
 This section is the authoritative structural specification for the ONT RBAC governance
-model. It supersedes any per-section descriptions that conflict with it.
+model. It supersedes any per-section descriptions that conflict with it. Locked
+2026-04-26. No implementation may deviate from these rules without a Governor directive.
 
 ---
 
-### Layer 1 - Management RBACPolicy (fleet ceiling)
+### PermissionSet global rule
 
-**Object:** `management-policy` (RBACPolicy) in seam-system.
-**Object:** `management-maximum` (PermissionSet) in seam-system.
+There are exactly two PermissionSet canonical names across the entire platform:
+
+- `management-maximum` in seam-system (Layer 1, compiler-created)
+- `cluster-maximum` in seam-tenant-{clusterName} (Layer 2, guardian-created, one per cluster)
+
+**No other PermissionSet objects exist anywhere.** There are no per-operator PermissionSets
+and no per-component PermissionSets. The compiler must not emit any PermissionSet other than
+`management-maximum`. Guardian must not create any PermissionSet other than `cluster-maximum`.
+Any code path that creates a PermissionSet with any other name is an invariant violation.
+
+Every RBACProfile's `permissionDeclarations` references one of these two canonical
+PermissionSets: Seam operator profiles reference `management-maximum`; all other component
+profiles reference `cluster-maximum` in their respective cluster's namespace.
+
+---
+
+### Layer 1 - Management RBACPolicy (fleet ceiling, seam-system)
+
+**Objects (compiler-created, git-committed, applied before guardian starts):**
+- `management-policy` (RBACPolicy) in seam-system
+- `management-maximum` (PermissionSet) in seam-system
+
 **Authorship:** compiler exclusively, as part of the bootstrap/enable bundle.
-  Never created or modified by guardian's reconcilers.
-
-`management-policy` governs the entire fleet. It references `management-maximum`
-as its ceiling PermissionSet. Without guardian sweeping and taking governance
-ownership of this policy on startup, it is inert. Guardian gives it enforcement
-meaning through the bootstrap annotation sweep and webhook enforcement chain.
+Guardian's reconcilers never create or modify these objects. They are inert until
+guardian sweeps them on startup and takes governance ownership through the bootstrap
+annotation sweep and webhook enforcement chain.
 
 **Who references Layer 1:**
-Seam operator RBACProfiles (guardian, platform, wrapper, conductor, seam-core).
-On the management cluster these profiles live in seam-system. On tenant clusters
-they live in ont-system. In both cases `rbacPolicyRef: management-policy`.
+Seam operator RBACProfiles: guardian, platform, wrapper, conductor, seam-core.
+- On the management cluster: live in seam-system, `rbacPolicyRef: management-policy`
+- On tenant clusters: live in ont-system, `rbacPolicyRef: management-policy`
+- `permissionDeclarations[0].permissionSetRef: management-maximum` in both cases
 
-Layer 1 is the fleet authority. Any operation that spans clusters or authorizes
-fleet management actions must be governed by Layer 1.
+Layer 1 is the fleet authority. No per-operator PermissionSet exists. The fleet
+ceiling (`management-maximum`) is the single reference for all Seam operator profiles.
 
 ---
 
-### Layer 2 - Cluster RBACPolicy (per TalosCluster)
+### Layer 2 - Cluster RBACPolicy (per TalosCluster, seam-tenant-{clusterName})
 
-**Object:** `cluster-policy` (RBACPolicy) in seam-tenant-{clusterName}.
-**Object:** `cluster-maximum` (PermissionSet) in seam-tenant-{clusterName}.
-**Authorship:** guardian's ClusterRBACPolicyReconciler (role=management only).
-  Never human-authored.
+**Objects (guardian-created by ClusterRBACPolicyReconciler, role=management only):**
+- `cluster-policy` (RBACPolicy) in seam-tenant-{clusterName}
+- `cluster-maximum` (PermissionSet) in seam-tenant-{clusterName}
 
-One cluster-policy per TalosCluster. Created when InfrastructureTalosCluster is
-admitted to seam-system. The cluster PermissionSet (`cluster-maximum`) is the sole
-governance ceiling for all non-seam-operator components on that cluster. There are
-no per-component RBACPolicy objects and no per-component PermissionSet objects.
+**Authorship:** guardian's ClusterRBACPolicyReconciler when InfrastructureTalosCluster
+is admitted to seam-system. Never human-authored.
 
-**Functional obligation to Layer 1:**
+**Functional obligation to Layer 1 -- validation timing (CS-INV-009):**
 At cluster-policy creation time, ClusterRBACPolicyReconciler reads `management-maximum`
-from seam-system and validates that `cluster-maximum` is a subset of it. This is
-option (a) -- creation-time validation, not admission-time. The deadlock-free guarantee:
-management-maximum is compiler-created and guaranteed to exist before guardian starts;
-the reconciler only runs after guardian is up. Re-validation occurs whenever
-management-maximum changes.
+from seam-system and validates that the permissions to be written into `cluster-maximum`
+are a subset of `management-maximum`. This validation runs at creation time and whenever
+`management-maximum` changes (the reconciler watches management-maximum and re-queues all
+TalosCluster CRs on change). Validation is never performed at admission time. The
+deadlock-free guarantee: management-maximum is compiler-created and exists before guardian
+starts; the reconciler only runs after guardian is operational; no circular dependency.
+
+The admission webhook validates a component's RBACProfile against `cluster-policy` only.
+It never reads or checks management-maximum at admission time. By the time any component
+profile is admitted, cluster-maximum has already been validated against management-maximum
+by the reconciler. The chain is integrity-preserving without any admission-time lookup
+of the management ceiling. This is the architectural answer to the deadlock problem.
 
 **Delivery to tenant clusters:**
-`cluster-maximum` PermissionSet is included in the signed PermissionSnapshot
-delivered from the management cluster to the tenant cluster. Conductor (role=tenant)
-verifies the guardian signature and reconciles the PermissionSet before permitting
-any cluster operations. The PermissionSet on a tenant cluster is a signed, delivered
-artifact -- never locally authored.
+`cluster-maximum` PermissionSet is included in the signed PermissionSnapshot delivered
+from the management cluster to the tenant cluster. Conductor (role=tenant) verifies the
+guardian signature and reconciles the PermissionSet before permitting any cluster
+operations. The PermissionSet on a tenant cluster is a signed, delivered artifact --
+never locally authored on the tenant.
 
 **Management cluster special case:**
-The management cluster (ccs-mgmt) holds both Layer 1 (`management-policy` for
-fleet-wide authority) and Layer 2 (`cluster-policy` in seam-tenant-ccs-mgmt, created
-when InfrastructureTalosCluster for ccs-mgmt is admitted). This is because ccs-mgmt
-is also a seam tenant. Fleet-wide operations are governed by Layer 1. Operations
-scoped to the ccs-mgmt cluster are governed by Layer 2 for ccs-mgmt.
+ccs-mgmt holds both Layer 1 and Layer 2. Layer 1 (`management-policy`, `management-maximum`
+in seam-system) governs fleet-wide operator authority. Layer 2 (`cluster-policy`,
+`cluster-maximum` in seam-tenant-ccs-mgmt) governs ccs-mgmt as a seam tenant -- authorizing
+cluster-scoped operations and pack deployments targeting ccs-mgmt. Both layers coexist on
+the management cluster. ccs-mgmt is both the fleet governor (Layer 1) and a governed cluster
+(Layer 2). The structural difference between ccs-mgmt and other tenant clusters is not a
+type flag; it is that ccs-mgmt also holds Layer 1 objects that tenant clusters never hold.
 
 ---
 
-### Layer 3 - Component RBACProfiles
+### Layer 3 - Component RBACProfiles (per component)
 
 **Seam operator profiles:**
-- Location: seam-system (management cluster), ont-system (tenant cluster)
-- rbacPolicyRef: management-policy (Layer 1)
+- Namespace: seam-system (management cluster), ont-system (tenant cluster)
+- `rbacPolicyRef: management-policy`
+- `permissionDeclarations[0].permissionSetRef: management-maximum`
 - Created by compiler enable as part of the bootstrap bundle
+- Label: `ontai.dev/rbac-profile-type=seam-operator`
 
-**All other component profiles (third-party tools, pack components, seam-core on non-management clusters):**
-- Location: seam-tenant-{clusterName}
-- rbacPolicyRef: cluster-policy (Layer 2)
-- Created by guardian intake flow (management cluster) or conductor role=tenant sweep (tenant cluster)
-- No separate PermissionSet object per component; permission claims are declared
-  inline via RBACProfile.permissionDeclarations
+**All other component profiles (third-party tools, pack components):**
+- Namespace: seam-tenant-{clusterName}
+- `rbacPolicyRef: cluster-policy`
+- `permissionDeclarations[0].permissionSetRef: cluster-maximum`
+- Created by guardian pack intake flow or conductor role=tenant sweep
 - Label: `ontai.dev/policy-type=component`
 
-**IdentityProvider / IdentityBinding chain:**
+**There are no per-component RBACPolicy objects and no per-component PermissionSet
+objects anywhere in the hierarchy.** One RBACPolicy and one PermissionSet exist per
+layer per cluster-scoped namespace. RBACProfiles are the only per-component governance
+objects. This invariant applies equally to Seam operators (Layer 1) and third-party
+components (Layer 2/3). The compiler may not emit per-operator PermissionSets.
+
+---
+
+### IdentityProvider / IdentityBinding chain
+
 IdentityProvider declares the upstream trust anchor (OIDC endpoint, PKI CA, token issuer).
 IdentityBinding maps a specific identity from that provider to an ONT permission principal.
 The principal is referenced by RBACProfile.principalRef. The governance chain is:
 
-  IdentityProvider (trust anchor)
-    -> IdentityBinding (identity to principal)
-      -> RBACProfile.principalRef (principal to permissions)
-        -> rbacPolicyRef: cluster-policy (Layer 2) or management-policy (Layer 1)
+  IdentityProvider (upstream trust anchor)
+    -> IdentityBinding (identity claim -> platform principal)
+      -> RBACProfile.principalRef (principal -> permission scope)
+        -> rbacPolicyRef: management-policy (Seam operators)
+                      or: cluster-policy (all other components)
 
 There is no direct IdentityProvider-to-RBACPolicy link. The link runs through the
 principal resolved by IdentityBinding. Multiple RBACProfiles may reference the same
@@ -850,14 +888,20 @@ principal. Multiple IdentityBindings may reference the same IdentityProvider.
 
 ### No-deadlock guarantee
 
-Guardian starts after compiler has applied Layer 1 (`management-policy`, `management-maximum`)
-to seam-system. Layer 2 is created by the reconciler after guardian is up -- management-maximum
-is guaranteed present. Layer 3 component profiles are admitted by the webhook after
-cluster-policy exists. The admission webhook checks RBACProfile against cluster-policy only;
-it never reads management-maximum at admission time. The subset check (cluster-maximum within
-management-maximum) is strictly a reconciler-time operation, not an admission-time operation.
-Bootstrap seam operator profiles are admitted during the bootstrap RBAC window before the
-webhook enforces -- no deadlock at any startup phase.
+Startup order:
+1. Compiler applies Layer 1 (management-policy, management-maximum) to seam-system before
+   guardian starts. These objects are git-committed and applied unconditionally.
+2. Guardian starts. Bootstrap annotation sweep runs. Bootstrap RBACProfiles (Seam operators)
+   are admitted during the bootstrap RBAC window before webhook enforcement activates.
+3. InfrastructureTalosCluster CRs are admitted. ClusterRBACPolicyReconciler creates Layer 2
+   objects. management-maximum is guaranteed present at this point.
+4. Component RBACProfiles are admitted after cluster-policy exists in their namespace.
+   The admission webhook checks against cluster-policy only.
+
+The admission webhook never reads management-maximum at admission time. The cluster-maximum
+vs management-maximum subset check is a reconciler-time operation only (step 3 above). There
+is no circular dependency at any phase of startup. This guarantee is unconditional and must
+be preserved in all future implementations.
 
 ---
 
@@ -885,6 +929,20 @@ webhook enforces -- no deadlock at any startup phase.
   them. Seam operator RBACProfiles produced by compiler enable as part of bootstrap
   bundle. Third-party components without a Guardian-provisioned RBACProfile may not
   operate in a Guardian-governed cluster.
+
+2026-04-26 - Three-layer RBAC hierarchy locked in §19. PermissionSet global rule
+  established: exactly two canonical PermissionSet names exist across the entire
+  platform -- management-maximum (Layer 1, seam-system) and cluster-maximum (Layer 2,
+  seam-tenant-{clusterName}). No per-operator and no per-component PermissionSet objects.
+  Seam operator RBACProfile permissionDeclarations reference management-maximum. All other
+  component RBACProfile permissionDeclarations reference cluster-maximum. Validation timing
+  confirmed (CS-INV-009): cluster-policy validation against management-maximum is a
+  reconciler-time operation at creation only; admission webhook never reads management-maximum.
+  IdentityProvider/IdentityBinding chain formally documented. Management cluster special case
+  (ccs-mgmt holds both Layer 1 and Layer 2) documented. §2 seam operator placement updated to
+  reflect management-maximum as sole permissionSetRef; per-operator PermissionSet prohibition
+  added. Compiler generating individual operator PermissionSets is a known defect requiring
+  a follow-up compiler fix session before any enable bundle is regenerated.
 
 2026-04-05 - Guardian dual-role model locked. §1 Deployment boundary updated: Guardian
   is a single binary with two declared roles (management/tenant); role=tenant is optional
