@@ -380,3 +380,115 @@ func TestClusterRBACPolicyReconciler_EnqueueAllTalosClusters(t *testing.T) {
 		t.Error("expected request for TalosCluster beta")
 	}
 }
+
+// newTenantTalosCluster returns a minimal InfrastructureTalosCluster with role=tenant.
+func newTenantTalosCluster(name string) *seamv1alpha1.InfrastructureTalosCluster {
+	return &seamv1alpha1.InfrastructureTalosCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "seam-system",
+		},
+		Spec: seamv1alpha1.InfrastructureTalosClusterSpec{
+			Role: seamv1alpha1.InfrastructureTalosClusterRoleTenant,
+		},
+	}
+}
+
+// TestClusterRBACPolicyReconciler_TenantCluster_CreatesConductorTenantProfile verifies
+// that reconciling a role=tenant TalosCluster creates the conductor-tenant RBACProfile
+// in seam-tenant-{clusterName}. guardian-schema.md §20 T-19a.
+func TestClusterRBACPolicyReconciler_TenantCluster_CreatesConductorTenantProfile(t *testing.T) {
+	tc := newTenantTalosCluster("ccs-dev")
+	c := buildClusterRBACClient(t, tc)
+	r := &controller.ClusterRBACPolicyReconciler{Client: c, Scheme: buildClusterRBACScheme(t)}
+
+	reconcileClusterRBAC(t, r, "ccs-dev")
+
+	ns := "seam-tenant-ccs-dev"
+	profile := &securityv1alpha1.RBACProfile{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name: "conductor-tenant", Namespace: ns,
+	}, profile); err != nil {
+		t.Fatalf("conductor-tenant RBACProfile not created in %s: %v", ns, err)
+	}
+	if profile.Spec.PrincipalRef != "conductor" {
+		t.Errorf("principalRef: got %q want conductor", profile.Spec.PrincipalRef)
+	}
+	if profile.Spec.RBACPolicyRef != "cluster-policy" {
+		t.Errorf("rbacPolicyRef: got %q want cluster-policy", profile.Spec.RBACPolicyRef)
+	}
+	if len(profile.Spec.TargetClusters) != 1 || profile.Spec.TargetClusters[0] != "ccs-dev" {
+		t.Errorf("targetClusters: got %v want [ccs-dev]", profile.Spec.TargetClusters)
+	}
+	if profile.GetLabels()["ontai.dev/policy-type"] != "seam-operator" {
+		t.Errorf("policy-type label: got %q want seam-operator", profile.GetLabels()["ontai.dev/policy-type"])
+	}
+	if len(profile.Spec.PermissionDeclarations) != 1 ||
+		profile.Spec.PermissionDeclarations[0].PermissionSetRef != "cluster-maximum" {
+		t.Errorf("permissionDeclarations: got %v want [{cluster-maximum cluster}]", profile.Spec.PermissionDeclarations)
+	}
+}
+
+// TestClusterRBACPolicyReconciler_NonTenantCluster_NoConductorTenantProfile verifies
+// that reconciling a cluster without role=tenant does NOT create a conductor-tenant
+// RBACProfile. guardian-schema.md §20.
+func TestClusterRBACPolicyReconciler_NonTenantCluster_NoConductorTenantProfile(t *testing.T) {
+	tc := newTalosClusterForRBACTest("ccs-mgmt") // no role set -- management path
+	c := buildClusterRBACClient(t, tc)
+	r := &controller.ClusterRBACPolicyReconciler{Client: c, Scheme: buildClusterRBACScheme(t)}
+
+	reconcileClusterRBAC(t, r, "ccs-mgmt")
+
+	ns := "seam-tenant-ccs-mgmt"
+	profile := &securityv1alpha1.RBACProfile{}
+	err := c.Get(context.Background(), types.NamespacedName{
+		Name: "conductor-tenant", Namespace: ns,
+	}, profile)
+	if err == nil {
+		t.Error("conductor-tenant RBACProfile must not be created for non-tenant clusters")
+	}
+}
+
+// TestClusterRBACPolicyReconciler_TenantDeletion_DeletesConductorTenantProfile verifies
+// that the reconcileDelete path removes the conductor-tenant RBACProfile from
+// seam-tenant-{clusterName} when the TalosCluster is deleted. guardian-schema.md §20.
+func TestClusterRBACPolicyReconciler_TenantDeletion_DeletesConductorTenantProfile(t *testing.T) {
+	tc := newTenantTalosCluster("ccs-dev-del")
+	now := metav1.Now()
+	tc.DeletionTimestamp = &now
+	tc.Finalizers = []string{"security.ontai.dev/cluster-rbac"}
+
+	ns := "seam-tenant-ccs-dev-del"
+
+	// Pre-seed: cluster objects and conductor-tenant profile already exist.
+	ps := &securityv1alpha1.PermissionSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-maximum", Namespace: ns},
+	}
+	policy := &securityv1alpha1.RBACPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-policy", Namespace: ns},
+	}
+	conductorProfile := &securityv1alpha1.RBACProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "conductor-tenant",
+			Namespace: ns,
+			Labels: map[string]string{
+				"ontai.dev/managed-by":  "guardian",
+				"ontai.dev/policy-type": "seam-operator",
+			},
+		},
+	}
+
+	c := buildClusterRBACClient(t, tc, ps, policy, conductorProfile)
+	r := &controller.ClusterRBACPolicyReconciler{Client: c, Scheme: buildClusterRBACScheme(t)}
+
+	reconcileClusterRBAC(t, r, "ccs-dev-del")
+
+	// conductor-tenant RBACProfile must be gone.
+	deleted := &securityv1alpha1.RBACProfile{}
+	err := c.Get(context.Background(), types.NamespacedName{
+		Name: "conductor-tenant", Namespace: ns,
+	}, deleted)
+	if err == nil {
+		t.Error("conductor-tenant RBACProfile must be deleted when TalosCluster is deleted")
+	}
+}

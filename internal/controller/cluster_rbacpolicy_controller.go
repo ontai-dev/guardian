@@ -70,6 +70,18 @@ const (
 	// LabelValuePolicyTypeComponent identifies all non-seam-operator component RBACProfiles.
 	// guardian-schema.md §19 Layer 3.
 	LabelValuePolicyTypeComponent = "component"
+
+	// LabelValuePolicyTypeSeamOperator identifies conductor-tenant and other seam-operator
+	// profiles placed in seam-tenant-* namespaces by guardian. These are NOT swept by the
+	// component backfill runnable and ARE deleted explicitly by reconcileDelete.
+	// guardian-schema.md §20.
+	LabelValuePolicyTypeSeamOperator = "seam-operator"
+
+	// ConductorTenantProfileName is the name of the management-side RBACProfile guardian
+	// creates in seam-tenant-{clusterName} for every role=tenant TalosCluster.
+	// The tenant conductor pulls this profile and writes it into ont-system on the target
+	// cluster. guardian-schema.md §20.
+	ConductorTenantProfileName = "conductor-tenant"
 )
 
 // ClusterRBACPolicyReconciler watches InfrastructureTalosCluster CRs and maintains
@@ -215,6 +227,16 @@ func (r *ClusterRBACPolicyReconciler) reconcileCreate(ctx context.Context, tc *s
 		return ctrl.Result{}, fmt.Errorf("create cluster-policy RBACPolicy in %s: %w", ns, err)
 	}
 
+	// Step 3.5: for role=tenant clusters, provision the conductor-tenant RBACProfile in
+	// seam-tenant-{clusterName}. This is the management-side authoritative profile that
+	// the tenant conductor pulls and writes into ont-system on the target cluster.
+	// guardian-schema.md §20.
+	if tc.Spec.Role == seamv1alpha1.InfrastructureTalosClusterRoleTenant {
+		if err := r.ensureConductorTenantProfile(ctx, tc, ns); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Step 4: add finalizer so deletion cascade runs.
 	if !controllerutil.ContainsFinalizer(tc, clusterRBACFinalizer) {
 		controllerutil.AddFinalizer(tc, clusterRBACFinalizer)
@@ -225,6 +247,42 @@ func (r *ClusterRBACPolicyReconciler) reconcileCreate(ctx context.Context, tc *s
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ensureConductorTenantProfile creates the management-side conductor-tenant RBACProfile
+// in seam-tenant-{clusterName} for role=tenant TalosCluster objects. The profile is
+// authoritative on the management cluster; the tenant conductor pulls it from there and
+// writes it into ont-system on the target cluster. Idempotent. guardian-schema.md §20.
+func (r *ClusterRBACPolicyReconciler) ensureConductorTenantProfile(
+	ctx context.Context,
+	tc *seamv1alpha1.InfrastructureTalosCluster,
+	ns string,
+) error {
+	profile := &securityv1alpha1.RBACProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ConductorTenantProfileName,
+			Namespace: ns,
+			Labels: map[string]string{
+				LabelKeyManagedBy:  LabelManagedByGuardian,
+				LabelKeyPolicyType: LabelValuePolicyTypeSeamOperator,
+			},
+		},
+		Spec: securityv1alpha1.RBACProfileSpec{
+			PrincipalRef:   "conductor",
+			TargetClusters: []string{tc.Name},
+			RBACPolicyRef:  ClusterPolicyName,
+			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
+				{
+					PermissionSetRef: ClusterMaximumPermSetName,
+					Scope:            securityv1alpha1.PermissionScopeCluster,
+				},
+			},
+		},
+	}
+	if err := r.Client.Create(ctx, profile); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create conductor-tenant RBACProfile in %s: %w", ns, err)
+	}
+	return nil
 }
 
 // reconcileDelete cascades deletion of all component RBACProfiles, then cluster objects,
@@ -239,6 +297,18 @@ func (r *ClusterRBACPolicyReconciler) reconcileDelete(ctx context.Context, tc *s
 
 	ns := "seam-tenant-" + tc.Name
 	componentSelector := client.MatchingLabels{LabelKeyPolicyType: LabelValuePolicyTypeComponent}
+
+	// Step 1a: for role=tenant clusters, delete conductor-tenant seam-operator profile.
+	// This profile is NOT labeled component, so the component sweep below will not reach it.
+	// guardian-schema.md §20.
+	if tc.Spec.Role == seamv1alpha1.InfrastructureTalosClusterRoleTenant {
+		conductorProfile := &securityv1alpha1.RBACProfile{
+			ObjectMeta: metav1.ObjectMeta{Name: ConductorTenantProfileName, Namespace: ns},
+		}
+		if err := r.Client.Delete(ctx, conductorProfile); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete conductor-tenant RBACProfile in %s: %w", ns, err)
+		}
+	}
 
 	// Step 1: delete all component RBACProfiles in the namespace.
 	// These are all non-seam-operator profiles (third-party, pack components).
