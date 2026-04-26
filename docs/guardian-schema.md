@@ -1089,25 +1089,31 @@ by guardian. Guardian is not deployed on import-mode tenant clusters (§1 Deploy
 boundary). The tenant conductor verifies the PermissionSnapshot signature and installs
 the management-policy locally in ont-system before the RBACProfile admission can succeed.
 
-**Validation bypass note (Point 1 -- see §19 Three-Layer RBAC Hierarchy; Decision J):**
+**Validation bypass note (Point 1 -- see §19 Three-Layer RBAC Hierarchy):**
 This RBACProfile is a Layer 3 seam operator variant. It is NOT subject to the normal
 component RBACProfile validation path that checks permissionDeclarations against
 `cluster-policy`. The distinction is structural:
 
 - Normal component profiles (Layer 2/3): created in `seam-tenant-{clusterName}` on the
-  management cluster; admission webhook validates their declarations against `cluster-policy`
-  in the same namespace.
+  management cluster; RBACProfileReconciler validates their declarations against `cluster-policy`
+  in the same namespace (Step H of the reconcile loop).
 - Seam operator profiles (Layer 3, seam operator variant): created in `ont-system` on the
   tenant cluster; they reference `management-policy` and `management-maximum` directly.
-  Their declarations are validated against `management-maximum` at the management cluster
-  level before the signed PermissionSnapshot is delivered to the tenant. The tenant
-  conductor's admission webhook does not re-validate this RBACProfile against `cluster-policy`
-  when it is admitted.
+  Their declarations are pre-validated against `management-maximum` at the management cluster
+  level before the signed PermissionSnapshot is delivered to the tenant.
 
-The seam-operator label (`ontai.dev/rbac-profile-type: seam-operator`) is the
-discriminator. The admission webhook on the tenant cluster checks this label and applies
-the seam-operator validation path, not the cluster-policy validation path. No per-operator
-PermissionSet or RBACPolicy is created on the tenant cluster for this profile.
+The `ontai.dev/rbac-profile-type: seam-operator` label is the intended discriminator for
+this routing. However, no guardian admission webhook currently intercepts RBACProfile
+admission on any cluster -- RBACProfile is absent from the guardian webhook `InterceptedKinds`
+set. The conductor RBACProfile on the tenant cluster is admitted without webhook validation
+against either `cluster-policy` or `management-maximum`. The PermissionSnapshot
+pre-validation on the management cluster is the sole enforcement gate at present.
+
+This is a known gap tracked as GUARDIAN-BL-RBACPROFILE-WEBHOOK. A future guardian
+RBACProfile validation webhook must intercept RBACProfile admission, check the
+seam-operator label, and route seam operator profiles through the management-maximum
+validation path instead of the cluster-policy path. No per-operator PermissionSet or
+RBACPolicy is created on the tenant cluster for this profile.
 
 ---
 
