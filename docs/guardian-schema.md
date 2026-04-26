@@ -861,6 +861,108 @@ webhook enforces -- no deadlock at any startup phase.
 
 ---
 
+## 20. Tenant Cluster Conductor Onboarding Protocol
+
+This section specifies the two-site handshake that Platform and Guardian execute
+together when a TalosCluster with mode=import, role=tenant is admitted. The result
+of the protocol is a running Conductor agent on the tenant cluster that operates
+under signed management authority.
+
+---
+
+### Participants
+
+| Participant | Runs on | Responsibility |
+|-------------|---------|----------------|
+| Platform (TalosClusterReconciler) | management cluster | Remote infrastructure -- ont-system, SA, Deployment |
+| Guardian (ClusterRBACPolicyReconciler) | management cluster | Management-side RBACProfile for tenant conductor |
+| Conductor (role=tenant) | tenant cluster | Pull RBACProfile from management, write to ont-system |
+
+---
+
+### Protocol sequence
+
+**Step 1 -- Management-side namespace and secrets (Platform)**
+Platform creates `seam-tenant-{clusterName}` and copies the kubeconfig Secret into it.
+See platform-schema.md §12 steps 1-2.
+
+**Step 2 -- Guardian provisions conductor-tenant RBACProfile (Guardian)**
+ClusterRBACPolicyReconciler creates a `conductor-tenant` RBACProfile in
+`seam-tenant-{clusterName}` as part of its normal reconcile pass for any
+role=tenant TalosCluster. This profile is the management-side authoritative
+declaration for the tenant conductor's permissions.
+
+Profile contract:
+- Name: `conductor-tenant`
+- Namespace: `seam-tenant-{clusterName}`
+- Labels: `ontai.dev/managed-by=guardian`, `ontai.dev/policy-type=seam-operator`
+- Spec.principalRef: `conductor`
+- Spec.targetClusters: `[clusterName]`
+- Spec.rbacPolicyRef: `cluster-policy` (Layer 2, same namespace)
+- Spec.permissionDeclarations: `[{permissionSetRef: cluster-maximum, scope: cluster}]`
+
+The `seam-operator` policy-type label distinguishes this profile from component
+profiles. The component backfill runnable (GUARDIAN-BL-RBACPROFILE-SWEEP) does
+not process seam-operator profiles. Deletion is handled explicitly by
+reconcileDelete when the TalosCluster is removed, not by the component sweep.
+
+**Step 3 -- Platform creates remote infrastructure (Platform)**
+Platform's `EnsureConductorDeploymentOnTargetCluster` reads the import-path
+kubeconfig (`target-cluster-kubeconfig` in `seam-tenant-{clusterName}`) and
+connects to the tenant cluster. Using this remote connection it:
+1. Creates the `ont-system` namespace if absent.
+2. Creates the `conductor` ServiceAccount in `ont-system` if absent.
+3. Creates the Conductor Deployment (role=tenant) in `ont-system` if absent.
+
+The Deployment is built by `BuildConductorAgentDeployment` with `CONDUCTOR_ROLE=tenant`.
+Platform does not write the `conductor-tenant` RBACProfile to the tenant cluster.
+That step is performed by Conductor itself (step 4).
+
+**Step 4 -- Tenant conductor pulls and writes RBACProfile (Conductor)**
+Conductor role=tenant, once running, pulls the `conductor-tenant` RBACProfile from
+`seam-tenant-{clusterName}` on the management cluster and writes it into `ont-system`
+on the tenant cluster. This is the CONDUCTOR-BL-TENANT-ROLE-RBACPROFILE-DISTRIBUTION
+implementation path. Management Conductor retains signing authority.
+
+**Step 5 -- Platform observes Deployment availability and advances (Platform)**
+Platform polls the Conductor Deployment for `Available=True` via the remote kubernetes
+client. When Available=True, Platform sets `ConductorReady=True` and `Ready=True` on
+the TalosCluster. The cluster is now fully operational under Seam governance.
+
+---
+
+### Readiness gate
+
+Platform uses `ConductorReady=True` as the sole gate before setting `Ready=True` on
+an import-mode tenant TalosCluster. The phase progression is:
+
+```
+Bootstrapped=False --> Bootstrapped=True (after management-side steps complete)
+ConductorReady=False --> ConductorReady=True (after Conductor Deployment Available)
+Ready=True (set together with ConductorReady=True)
+```
+
+Platform does NOT use a separate `phase` field. The Conditions slice is the authoritative
+state carrier. `RequeueAfter` is set to the capiPollInterval (20s) during the conductor
+availability wait.
+
+---
+
+### Invariants
+
+- Guardian creates exactly one `conductor-tenant` RBACProfile per role=tenant TalosCluster.
+- Platform creates exactly one Conductor Deployment per role=tenant import cluster.
+- The Deployment is stamped CONDUCTOR_ROLE=tenant. Any other value is a programming error.
+- When the TalosCluster is deleted, Guardian deletes the `conductor-tenant` RBACProfile
+  in reconcileDelete. Platform deletes the remote infrastructure through the normal
+  controller-runtime GC path (ownerReference on seam-tenant-* resources) or teardown
+  sequence (Decision H).
+- The full PermissionSnapshotReceipt gRPC ceremony is future work
+  (CONDUCTOR-BL-TENANT-ROLE-RBACPROFILE-DISTRIBUTION). The current readiness gate is
+  Deployment Available=True, not gRPC handshake completion.
+
+---
+
 *security.ontai.dev schema - guardian*
 *Amendments appended below with date and rationale.*
 
@@ -940,3 +1042,13 @@ webhook enforces -- no deadlock at any startup phase.
   specified. Management cluster dual-layer pattern documented. RBACPolicy authorship
   invariant: compiler for Layer 1, guardian reconciler for Layer 2, never human-authored.
   security-system namespace removed throughout (does not exist).
+
+2026-04-26 - §20 Tenant Cluster Conductor Onboarding Protocol added. T-19 and T-19a
+  implementation contract. Guardian (ClusterRBACPolicyReconciler) creates conductor-tenant
+  RBACProfile in seam-tenant-{cluster} for every role=tenant TalosCluster -- this is the
+  management-side authoritative profile. Platform creates remote infrastructure (ont-system,
+  conductor SA, Conductor Deployment) on the tenant cluster using the import-path kubeconfig.
+  Conductor role=tenant pulls the profile and writes it to ont-system. Platform gates
+  Ready=True on ConductorReady=True (Deployment Available), not on gRPC handshake
+  (CONDUCTOR-BL-TENANT-ROLE-RBACPROFILE-DISTRIBUTION is future). LabelValuePolicyTypeSeamOperator
+  added as the policy-type discriminator for seam-operator profiles in seam-tenant-* namespaces.
