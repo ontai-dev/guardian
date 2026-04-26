@@ -16,7 +16,9 @@ import (
 	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 	"github.com/ontai-dev/guardian/internal/database"
@@ -404,11 +406,50 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // SetupWithManager registers RBACProfileReconciler as the controller for RBACProfile.
+// It also watches PermissionSet objects and maps each change to every RBACProfile in
+// the same namespace whose permissionDeclarations reference the changed PermissionSet.
+// This ensures ClusterRole content is re-evaluated whenever a referenced PermissionSet
+// changes, eliminating the need for manual ClusterRole patching. GUARDIAN-BL-PERMISSIONSET-WATCH.
 func (r *RBACProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.RBACProfile{}).
+		Watches(
+			&securityv1alpha1.PermissionSet{},
+			handler.EnqueueRequestsFromMapFunc(r.MapPermissionSetToProfiles),
+		).
 		Named("rbacprofile").
 		Complete(r)
+}
+
+// MapPermissionSetToProfiles maps a PermissionSet change event to reconcile requests
+// for every RBACProfile in the same namespace whose permissionDeclarations contain a
+// permissionSetRef matching the changed PermissionSet's name. Profiles that do not
+// reference the changed PermissionSet produce no request. Exported for unit testing.
+func (r *RBACProfileReconciler) MapPermissionSetToProfiles(ctx context.Context, obj client.Object) []reconcile.Request {
+	ps, ok := obj.(*securityv1alpha1.PermissionSet)
+	if !ok {
+		return nil
+	}
+	profileList := &securityv1alpha1.RBACProfileList{}
+	if err := r.Client.List(ctx, profileList, client.InNamespace(ps.Namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range profileList.Items {
+		profile := &profileList.Items[i]
+		for _, decl := range profile.Spec.PermissionDeclarations {
+			if decl.PermissionSetRef == ps.Name {
+				reqs = append(reqs, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      profile.Name,
+						Namespace: profile.Namespace,
+					},
+				})
+				break // avoid duplicate if the same PermissionSet appears in multiple declarations
+			}
+		}
+	}
+	return reqs
 }
 
 // ---------------------------------------------------------------------------
