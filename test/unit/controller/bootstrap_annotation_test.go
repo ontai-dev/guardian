@@ -308,7 +308,7 @@ func buildBootstrapReconcilerWithSweep(
 		Recorder:          clientevents.NewFakeRecorder(32),
 		Gate:              gate,
 		Registry:          registry,
-		OperatorNamespace: controller.GuardianSingletonNamespace,
+		OperatorNamespace: "seam-system",
 		SweepDone:         sweepDone,
 	}
 }
@@ -324,7 +324,7 @@ func TestBootstrapController_BlocksObserveOnlyWhenSweepNotComplete(t *testing.T)
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      controller.GuardianSingletonName,
-			Namespace: controller.GuardianSingletonNamespace,
+			Namespace: "seam-system",
 		},
 	})
 	if err != nil {
@@ -338,7 +338,7 @@ func TestBootstrapController_BlocksObserveOnlyWhenSweepNotComplete(t *testing.T)
 	gdn := &securityv1alpha1.Guardian{}
 	if err := r.Client.Get(context.Background(), types.NamespacedName{
 		Name:      controller.GuardianSingletonName,
-		Namespace: controller.GuardianSingletonNamespace,
+		Namespace: "seam-system",
 	}, gdn); err != nil {
 		t.Fatalf("get Guardian: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestBootstrapController_AdvancesObserveOnlyWhenSweepComplete(t *testing.T) 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      controller.GuardianSingletonName,
-			Namespace: controller.GuardianSingletonNamespace,
+			Namespace: "seam-system",
 		},
 	})
 	if err != nil {
@@ -368,7 +368,7 @@ func TestBootstrapController_AdvancesObserveOnlyWhenSweepComplete(t *testing.T) 
 	gdn := &securityv1alpha1.Guardian{}
 	if err := r.Client.Get(context.Background(), types.NamespacedName{
 		Name:      controller.GuardianSingletonName,
-		Namespace: controller.GuardianSingletonNamespace,
+		Namespace: "seam-system",
 	}, gdn); err != nil {
 		t.Fatalf("get Guardian: %v", err)
 	}

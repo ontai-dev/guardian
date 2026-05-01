@@ -243,15 +243,18 @@ func main() {
 	webhookServer.RegisterLineage()
 	webhookServer.RegisterRBACIntake(mgr.GetClient())
 	webhookServer.RegisterPackIntake(mgr.GetClient())
-	webhookServer.RegisterOperatorCRGuard(bootstrapWindow)
+	webhookServer.RegisterOperatorCRGuard(bootstrapWindow, operatorNamespace)
 	webhookServer.RegisterDeclaringPrincipal(bootstrapWindow)
 
 	// Register the bootstrap label check as a post-cache Runnable. Runs for both
-	// roles. CheckBootstrapLabels reads the seam-system namespace, which requires
+	// roles. CheckBootstrapLabels reads the operator namespace, which requires
 	// the informer cache to be running — it cannot execute before mgr.Start().
 	// On failure the Runnable calls os.Exit(1); returning nil allows the manager
 	// to continue. guardian-schema.md §4, INV-020.
-	if err := mgr.Add(&bootstrapLabelRunnable{kube: mgr.GetClient()}); err != nil {
+	if err := mgr.Add(&bootstrapLabelRunnable{
+		kube:              mgr.GetClient(),
+		operatorNamespace: operatorNamespace,
+	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap label runnable")
 		os.Exit(1)
 	}
@@ -287,7 +290,7 @@ func main() {
 	}
 }
 
-// bootstrapLabelRunnable verifies that the seam-system namespace carries the
+// bootstrapLabelRunnable verifies that the operator namespace carries the
 // seam.ontai.dev/webhook-mode=exempt label after the informer cache is running.
 // Registered via mgr.Add for both roles — the admission webhook requires this
 // label regardless of role. CheckBootstrapLabels reads a Kubernetes object, so
@@ -295,20 +298,22 @@ func main() {
 // os.Exit(1); the manager is shut down.
 // guardian-schema.md §4, INV-020, CS-INV-004.
 type bootstrapLabelRunnable struct {
-	kube client.Client
+	kube              client.Client
+	operatorNamespace string
 }
 
 func (r *bootstrapLabelRunnable) Start(ctx context.Context) error {
-	if err := webhook.CheckBootstrapLabels(ctx, r.kube); err != nil {
+	if err := webhook.CheckBootstrapLabels(ctx, r.kube, r.operatorNamespace); err != nil {
 		ctrl.Log.WithName("setup").Error(err,
 			"bootstrap label check failed; refusing to continue",
+			"namespace", r.operatorNamespace,
 			"label", webhook.WebhookModeLabelKey,
 			"expected", string(webhook.NamespaceModeExempt),
 		)
 		os.Exit(1)
 	}
 	ctrl.Log.WithName("setup").Info("bootstrap label check passed",
-		"namespace", "seam-system",
+		"namespace", r.operatorNamespace,
 		"label", webhook.WebhookModeLabelKey,
 	)
 	return nil
