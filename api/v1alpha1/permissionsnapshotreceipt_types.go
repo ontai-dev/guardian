@@ -49,6 +49,17 @@ type PermissionSnapshotReceiptStatus struct {
 	// SyncStatus is the synchronization state with the management cluster.
 	// +optional
 	SyncStatus SyncStatus `json:"syncStatus,omitempty"`
+
+	// DegradedSecurityState is set to true when the snapshot pull loop cannot
+	// verify the Ed25519 signature on the PermissionSnapshot. Written by conductor
+	// agent in tenant mode. INV-026.
+	// +optional
+	DegradedSecurityState bool `json:"degradedSecurityState,omitempty"`
+
+	// DegradedReason describes the signature verification failure when
+	// DegradedSecurityState=true. Written by conductor agent in tenant mode. INV-026.
+	// +optional
+	DegradedReason string `json:"degradedReason,omitempty"`
 }
 
 // PermissionSnapshotReceipt is the target cluster CRD managed by the runner in
