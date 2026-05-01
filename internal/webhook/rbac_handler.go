@@ -31,11 +31,18 @@ type RBACAdmissionHandler struct {
 }
 
 // partialObject is used for partial JSON unmarshalling of the admitted resource.
-// Only the metadata.annotations field is needed for the admission decision.
+// metadata.annotations and metadata.labels are used for the admission decision.
+// spec.permissionDeclarations is extracted for RBACProfile seam-operator validation (T-25a).
 type partialObject struct {
 	Metadata struct {
 		Annotations map[string]string `json:"annotations"`
+		Labels      map[string]string `json:"labels"`
 	} `json:"metadata"`
+	Spec struct {
+		PermissionDeclarations []struct {
+			PermissionSetRef string `json:"permissionSetRef"`
+		} `json:"permissionDeclarations"`
+	} `json:"spec"`
 }
 
 // Handle implements admission.Handler.
@@ -52,10 +59,19 @@ func (h *RBACAdmissionHandler) Handle(ctx context.Context, req admission.Request
 
 	nsMode := h.namespaceMode.ResolveMode(ctx, req.Namespace)
 
+	var permSetRefs []string
+	for _, pd := range obj.Spec.PermissionDeclarations {
+		if pd.PermissionSetRef != "" {
+			permSetRefs = append(permSetRefs, pd.PermissionSetRef)
+		}
+	}
+
 	decision := EvaluateAdmission(AdmissionRequest{
 		Kind:                req.Kind.Kind,
 		Operation:           AdmissionOperation(req.Operation),
 		Annotations:         obj.Metadata.Annotations,
+		Labels:              obj.Metadata.Labels,
+		PermissionSetRefs:   permSetRefs,
 		BootstrapWindowOpen: h.bootstrapWindow.IsOpen(),
 		NSMode:              nsMode,
 	})
