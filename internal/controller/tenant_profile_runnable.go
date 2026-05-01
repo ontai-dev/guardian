@@ -159,7 +159,12 @@ func (r *TenantProfileRunnable) ensureRBACProfile(ctx context.Context, principal
 		Spec: securityv1alpha1.RBACProfileSpec{
 			PrincipalRef:   principalRef,
 			TargetClusters: []string{r.ClusterID},
-			RBACPolicyRef:  ClusterPolicyName,
+			// RBACPolicyRef is empty on tenant clusters. The governance ceiling
+			// (cluster-policy/cluster-maximum) lives on the management cluster.
+			// The PermissionSnapshot is the computed oracle for this cluster.
+			// RBACProfileReconciler tenant path provisions without a local policy CR.
+			// GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
+			RBACPolicyRef: "",
 			PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{
 				{
 					PermissionSetRef: ClusterMaximumPermSetName,

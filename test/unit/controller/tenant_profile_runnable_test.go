@@ -82,8 +82,11 @@ func TestTenantProfileRunnable_CreatesRBACProfileInNamespace(t *testing.T) {
 	); err != nil {
 		t.Fatalf("RBACProfile cert-manager not found in %s: %v", namespace, err)
 	}
-	if profile.Spec.RBACPolicyRef != "cluster-policy" {
-		t.Errorf("RBACPolicyRef = %q, want cluster-policy", profile.Spec.RBACPolicyRef)
+	// RBACPolicyRef must be empty on tenant clusters. The governance ceiling lives
+	// on the management cluster; the PermissionSnapshot is the computed oracle.
+	// GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
+	if profile.Spec.RBACPolicyRef != "" {
+		t.Errorf("RBACPolicyRef = %q, want empty (tenant clusters carry no local cluster-policy)", profile.Spec.RBACPolicyRef)
 	}
 	wantPrincipal := "system:serviceaccount:cert-manager:cert-manager"
 	if profile.Spec.PrincipalRef != wantPrincipal {
