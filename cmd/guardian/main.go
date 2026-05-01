@@ -295,11 +295,18 @@ func main() {
 	// annotation on any resource missing ontai.dev/rbac-owner=guardian. Signals
 	// completion via sweepDone, unblocking BootstrapController from advancing
 	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
+	// ManagementClusterName is only needed for role=management (third-party profile
+	// creation targets seam-tenant-{ManagementClusterName}). For role=tenant,
+	// TenantProfileRunnable owns profile creation -- pass "" to skip that step.
+	sweepMgmtCluster := managementClusterName
+	if guardianRole == role.RoleTenant {
+		sweepMgmtCluster = ""
+	}
 	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
 		Client:                mgr.GetClient(),
 		SweepDone:             sweepDone,
 		AuditWriter:           auditWriter,
-		ManagementClusterName: managementClusterName,
+		ManagementClusterName: sweepMgmtCluster,
 	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)
