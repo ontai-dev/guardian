@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // tenantKnownComponents is the catalog of third-party components Guardian wraps
@@ -70,6 +71,11 @@ type TenantProfileRunnable struct {
 
 	// Interval is the reconcile period.
 	Interval time.Duration
+
+	// AuditWriter receives rbacprofile.component_wrapped events for each newly created
+	// profile. Nil and NoopAuditWriter are both safe -- tenant clusters carry no CNPG
+	// dependency, so events are typically discarded. Wired for forward-compatibility.
+	AuditWriter database.AuditWriter
 }
 
 // NeedLeaderElection satisfies manager.LeaderElectionRunnable.
@@ -173,5 +179,17 @@ func (r *TenantProfileRunnable) ensureRBACProfile(ctx context.Context, principal
 			},
 		},
 	}
-	return r.Client.Create(ctx, profile)
+	if err := r.Client.Create(ctx, profile); err != nil {
+		return err
+	}
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      r.ClusterID,
+		Subject:        principalRef,
+		Action:         "rbacprofile.component_wrapped",
+		Resource:       comp.ProfileName,
+		Decision:       "system",
+		MatchedPolicy:  comp.Name,
+		SequenceNumber: auditSeq(),
+	})
+	return nil
 }

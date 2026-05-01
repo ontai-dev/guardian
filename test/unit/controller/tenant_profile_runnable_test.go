@@ -270,8 +270,9 @@ func TestTenantProfileRunnable_TargetClustersSetToClusterID(t *testing.T) {
 
 // Compile-time guard: TenantProfileRunnable must expose exported fields.
 var _ = controller.TenantProfileRunnable{
-	Client:    nil,
-	Namespace: "",
-	ClusterID: "",
-	Interval:  0,
+	Client:      nil,
+	Namespace:   "",
+	ClusterID:   "",
+	Interval:    0,
+	AuditWriter: nil,
 }

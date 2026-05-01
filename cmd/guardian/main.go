@@ -455,7 +455,7 @@ func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionser
 	case role.RoleManagement:
 		return setupManagementControllers(mgr, epgStore, auditDB, aw, operatorNamespace, freshnessWindow)
 	case role.RoleTenant:
-		return setupTenantControllers(mgr, clusterID, operatorNamespace, mgmtDynClient)
+		return setupTenantControllers(mgr, clusterID, operatorNamespace, mgmtDynClient, aw)
 	default:
 		// ParseRole already prevents this path; guard defensively.
 		return nil
@@ -521,7 +521,7 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 //
 // TenantProfileRunnable: creates RBACProfiles in Namespace for each discovered
 // third-party component. Runs periodically (60 s). CS-INV-008.
-func setupTenantControllers(mgr ctrl.Manager, clusterID, namespace string, mgmtDynClient dynamic.Interface) error {
+func setupTenantControllers(mgr ctrl.Manager, clusterID, namespace string, mgmtDynClient dynamic.Interface, aw database.AuditWriter) error {
 	// AuditForwarderController: full implementation in WS4 session/41.
 	auditCh := make(chan controller.AuditForwarderEvent, 256)
 	if err := (&controller.AuditForwarderController{
@@ -554,10 +554,11 @@ func setupTenantControllers(mgr ctrl.Manager, clusterID, namespace string, mgmtD
 	// in Namespace (ont-system) on the tenant cluster. CS-INV-008 -- no per-component
 	// PermissionSet or RBACPolicy is created here.
 	if err := mgr.Add(&controller.TenantProfileRunnable{
-		Client:    mgr.GetClient(),
-		Namespace: namespace,
-		ClusterID: clusterID,
-		Interval:  60 * time.Second,
+		Client:      mgr.GetClient(),
+		Namespace:   namespace,
+		ClusterID:   clusterID,
+		Interval:    60 * time.Second,
+		AuditWriter: aw,
 	}); err != nil {
 		return fmt.Errorf("register TenantProfileRunnable: %w", err)
 	}

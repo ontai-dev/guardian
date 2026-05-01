@@ -30,10 +30,19 @@ var (
 	}
 )
 
+// LabelSnapshotTypeMirrored is applied to the local PermissionSnapshot mirror
+// written by TenantSnapshotRunnable in ont-system. Distinguishes the mirror from
+// management-authored snapshots. Read by RBACProfileReconciler tenant path.
+const LabelSnapshotTypeMirrored = "mirrored"
+
+// LabelKeySnapshotType is the label key used to identify mirrored snapshots.
+const LabelKeySnapshotType = "ontai.dev/snapshot-type"
+
 // TenantSnapshotRunnable is a manager.Runnable (requires leader election) that:
 //
 //  1. Pulls the PermissionSnapshot for ClusterID from the management cluster.
 //  2. Writes / updates the local PermissionSnapshotReceipt in Namespace.
+//  2a. Upserts a local PermissionSnapshot mirror in Namespace (enforcement reference).
 //  3. Patches lastAckedVersion + lastSeen on the management PermissionSnapshot status.
 //  4. Sets the Compliant condition on the management PermissionSnapshot.
 //
@@ -90,6 +99,7 @@ func (r *TenantSnapshotRunnable) runOnce(ctx context.Context) {
 	}
 
 	var snapshotName, version, mgmtNamespace string
+	var snapSpecMap map[string]interface{}
 	var found bool
 	for _, item := range list.Items {
 		spec, ok := item.Object["spec"].(map[string]interface{})
@@ -102,6 +112,7 @@ func (r *TenantSnapshotRunnable) runOnce(ctx context.Context) {
 		snapshotName = item.GetName()
 		mgmtNamespace = item.GetNamespace()
 		version, _ = spec["version"].(string)
+		snapSpecMap = spec
 		found = true
 		break
 	}
@@ -113,6 +124,15 @@ func (r *TenantSnapshotRunnable) runOnce(ctx context.Context) {
 	// Step 2 — Write / update local PermissionSnapshotReceipt.
 	if err := r.ensureLocalReceipt(ctx, snapshotName, version); err != nil {
 		log.Error(err, "ensure local PermissionSnapshotReceipt", "snapshot", snapshotName)
+		return
+	}
+
+	// Step 2a — Upsert local PermissionSnapshot mirror in Namespace.
+	// This is the enforcement reference read by RBACProfileReconciler (tenant path)
+	// and in future by the admission webhook for RBAC ceiling validation.
+	// The mirror carries the full Subjects permission content from the management snapshot.
+	if err := r.upsertLocalSnapshot(ctx, snapSpecMap); err != nil {
+		log.Error(err, "upsert local PermissionSnapshot mirror", "snapshot", snapshotName)
 		return
 	}
 
@@ -129,6 +149,51 @@ func (r *TenantSnapshotRunnable) runOnce(ctx context.Context) {
 	}
 
 	log.Info("snapshot receipt reconciled", "snapshot", snapshotName, "version", version)
+}
+
+// upsertLocalSnapshot creates or updates a PermissionSnapshot mirror in Namespace.
+// The mirror carries the full spec (including Subjects permission content) from the
+// management cluster snapshot. It is labeled ontai.dev/snapshot-type=mirrored so
+// the RBACProfileReconciler tenant path can distinguish it from management snapshots.
+// This is the local enforcement reference for the tenant cluster. guardian-schema.md §7.
+func (r *TenantSnapshotRunnable) upsertLocalSnapshot(ctx context.Context, specMap map[string]interface{}) error {
+	specJSON, err := json.Marshal(specMap)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot spec: %w", err)
+	}
+	var spec securityv1alpha1.PermissionSnapshotSpec
+	if err := json.Unmarshal(specJSON, &spec); err != nil {
+		return fmt.Errorf("unmarshal snapshot spec: %w", err)
+	}
+
+	localName := "snapshot-" + r.ClusterID
+	existing := &securityv1alpha1.PermissionSnapshot{}
+	err = r.LocalClient.Get(ctx, client.ObjectKey{Namespace: r.Namespace, Name: localName}, existing)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get local snapshot: %w", err)
+	}
+
+	if apierrors.IsNotFound(err) {
+		mirror := &securityv1alpha1.PermissionSnapshot{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: r.Namespace,
+				Name:      localName,
+				Labels: map[string]string{
+					LabelKeyManagedBy:    LabelManagedByGuardian,
+					LabelKeySnapshotType: LabelSnapshotTypeMirrored,
+				},
+			},
+			Spec: spec,
+		}
+		return r.LocalClient.Create(ctx, mirror)
+	}
+
+	if existing.Spec.Version == spec.Version {
+		return nil
+	}
+	patch := client.MergeFrom(existing.DeepCopy())
+	existing.Spec = spec
+	return r.LocalClient.Patch(ctx, existing, patch)
 }
 
 // ensureLocalReceipt creates or updates the PermissionSnapshotReceipt in Namespace.

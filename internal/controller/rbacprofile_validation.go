@@ -24,12 +24,16 @@ type ProfileValidationResult struct {
 
 // ValidateRBACProfileSpec validates the structural integrity of a RBACProfileSpec.
 //
-// All six checks run regardless of earlier failures (all-failures collection model).
+// All checks run regardless of earlier failures (all-failures collection model).
 // This function is pure: no Kubernetes API calls, no side effects.
 //
 // Checks:
 //  1. PrincipalRef must not be empty.
-//  2. RBACPolicyRef must not be empty.
+//  2. RBACPolicyRef: empty is permitted for tenant-cluster profiles. Those profiles
+//     are validated against the local PermissionSnapshot mirror (enforcement reference
+//     mirrored from the management cluster by TenantSnapshotRunnable) rather than a
+//     local RBACPolicy CR. Management profiles must always have a non-empty ref.
+//     GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
 //  3. PermissionDeclarations must not be empty.
 //  4. Each PermissionDeclaration: PermissionSetRef must not be empty.
 //  5. Each PermissionDeclaration: Scope must be a declared PermissionScope constant.
@@ -52,10 +56,9 @@ func ValidateRBACProfileSpec(spec securityv1alpha1.RBACProfileSpec) ProfileValid
 		fail("PrincipalRefNotEmpty", "principalRef must not be empty")
 	}
 
-	// Check 2 — RBACPolicyRef must not be empty.
-	if spec.RBACPolicyRef == "" {
-		fail("RBACPolicyRefNotEmpty", "rbacPolicyRef must not be empty; it must reference a governing RBACPolicy by name")
-	}
+	// Check 2 — RBACPolicyRef. Empty is valid for tenant-cluster profiles; the
+	// RBACProfileReconciler tenant path validates against the local PermissionSnapshot
+	// mirror instead of a local RBACPolicy CR. See GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
 
 	// Check 3 — PermissionDeclarations must not be empty.
 	if len(spec.PermissionDeclarations) == 0 {
