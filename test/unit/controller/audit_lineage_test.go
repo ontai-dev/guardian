@@ -54,11 +54,13 @@ func TestAuditLineage_RBACPolicyValidationFailedCarriesRef(t *testing.T) {
 		AuditWriter: aw,
 	}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "bad-policy", Namespace: ns},
-	})
-	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	// Two reconciles required: first adds the finalizer and requeues; second validates.
+	for i := range 2 {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "bad-policy", Namespace: ns},
+		}); err != nil {
+			t.Fatalf("Reconcile[%d]: %v", i, err)
+		}
 	}
 
 	var found *database.AuditEvent
@@ -102,11 +104,13 @@ func TestAuditLineage_RBACPolicyValidatedCarriesRef(t *testing.T) {
 		AuditWriter: aw,
 	}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "good-policy", Namespace: ns},
-	})
-	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	// Two reconciles required: first adds the finalizer and requeues; second validates.
+	for i := range 2 {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: "good-policy", Namespace: ns},
+		}); err != nil {
+			t.Fatalf("Reconcile[%d]: %v", i, err)
+		}
 	}
 
 	var found *database.AuditEvent
