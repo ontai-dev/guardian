@@ -21,7 +21,7 @@ Two roles: `management` (full EPG, PermissionSet, AuditSink, ClusterRBACPolicyRe
 | `permissionsnapshotreceipt_types.go` | 93L | `PermissionSnapshotReceipt` -- written in `ont-system` on tenant by TenantSnapshotRunnable |
 | `identitybinding_types.go` | 209L | `IdentityBinding` -- binds external identity to SeamMembership subject |
 | `identityprovider_types.go` | 137L | `IdentityProvider` -- OIDC provider configuration |
-| `guardian_types.go` | 122L | `Guardian` operator CR (spec is empty stub) |
+| `guardian_types.go` | 133L | `Guardian` operator CR; `GuardianStatus` holds `WebhookMode`, `NamespaceEnforcements`, `Conditions`, and `DiscoveredAPIGroups` (third-party API groups added to management-maximum by APIGroupSweepController) |
 
 No `ClusterRBACPolicy` or `ClusterAssignment` types exist in `api/v1alpha1/`. ClusterRBACPolicyReconciler watches seam-core `InfrastructureTalosCluster`, not a guardian-owned type.
 
@@ -47,6 +47,7 @@ No `ClusterRBACPolicy` or `ClusterAssignment` types exist in `api/v1alpha1/`. Cl
 | `identityprovider_controller.go:77` | `IdentityProviderReconciler.Reconcile()` | both | Checks OIDC discovery URL via `checkOIDCReachability()` L205. |
 | `identitybinding_controller.go:60` | `IdentityBindingReconciler.Reconcile()` | both | Links external identity to IdentityProvider + SeamMembership. |
 | `auditsink_controller.go:76` | `AuditSinkReconciler.Reconcile()` | management | Reads audit ConfigMaps, writes to CNPG `audit_events` via `processBatch()` L137. |
+| `apigroup_sweep_controller.go:67` | `APIGroupSweepController.Reconcile()` | management | Watches CRDs; adds explicit `{apiGroups: [g], resources: ["*"]}` rules to `management-maximum` for every new third-party API group detected. Updates `Guardian.Status.DiscoveredAPIGroups`. guardian-schema.md §21. |
 | `bootstrap_controller.go:126` | `BootstrapController.Reconcile()` | both | One-shot startup reconciler; closes bootstrap RBAC window when webhook is registered (CS-INV-004). |
 | `tenant_snapshot_runnable.go:51` | `TenantSnapshotRunnable` | tenant | Pulls PermissionSnapshot from management cluster; writes local `PermissionSnapshotReceipt` in `Namespace`; upserts local mirror with label `ontai.dev/snapshot-type=mirrored` (const `LabelKeySnapshotType` L39, value `"mirrored"` L36); patches management PermissionSnapshot `status.lastAckedVersion`. |
 | `tenant_profile_runnable.go:51` | `TenantProfileRunnable` | tenant | Creates RBACProfiles in `ont-system` on tenant for: cert-manager, kueue, cnpg, metallb, local-path-provisioner (catalog at `tenantKnownComponents` L22). No per-component PermissionSet or RBACPolicy (CS-INV-008). Each profile references `cluster-policy`. |
@@ -56,7 +57,7 @@ No `ClusterRBACPolicy` or `ClusterAssignment` types exist in `api/v1alpha1/`. Cl
 `ControllerSetForRole()` at `controllersets.go:37`:
 
 - **Shared (both roles)**: RBACPolicyReconciler, RBACProfileReconciler, IdentityProviderReconciler, IdentityBindingReconciler, BootstrapController.
-- **Management-only**: PermissionSetReconciler, EPGReconciler, AuditSinkReconciler.
+- **Management-only**: PermissionSetReconciler, EPGReconciler, AuditSinkReconciler, APIGroupSweepController.
 - **Tenant-only**: AuditForwarderController.
 - **Not in this function (started separately)**: PermissionService gRPC server (port 50051), TenantSnapshotRunnable, TenantProfileRunnable.
 
@@ -150,7 +151,7 @@ Contains only `.gitkeep`. The `/rbac-intake/pack` HTTP endpoint called by conduc
 
 | Package | Coverage |
 |---------|----------|
-| `test/unit/controller` | RBACProfileReconciler (tenant snapshot path), ClusterRBACPolicyReconciler, EPGReconciler, AuditSinkReconciler |
+| `test/unit/controller` | RBACProfileReconciler (tenant snapshot path), ClusterRBACPolicyReconciler, EPGReconciler, AuditSinkReconciler, APIGroupSweepController (IsSystemGroup, CollectThirdPartyGroups, ExplicitGroupsInPermissionSet, Reconcile idempotency + management-maximum patching) |
 | `test/unit/webhook` | BootstrapWindow, InterceptedKinds, admission decision logic |
 | `test/unit/epg` | EPG computation, ceiling intersection |
 | `test/unit/database` | LazyDBClient, SQLAuditWriter, AuditEvent round-trip |

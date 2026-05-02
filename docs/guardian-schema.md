@@ -963,6 +963,96 @@ availability wait.
 
 ---
 
+## 21. APIGroupSweepController
+
+### Purpose
+
+When CRDs for a previously unseen API group are installed on the management cluster,
+the seam operators (guardian, platform, wrapper, conductor, seam-core) must explicitly
+hold permission declarations for that group so the governance record remains complete
+and accurate. Although `management-maximum` already carries a wildcard rule
+`{apiGroups: ["*"], resources: ["*"]}` that grants effective access, governance
+explicitness and future least-privilege migration require an explicit PermissionRule
+entry per discovered group.
+
+### Scope
+
+Management role only. The controller runs on the management cluster. Propagation to
+tenant clusters is automatic: ClusterRBACPolicyReconciler (§18, §19) auto-syncs
+`cluster-maximum` from `management-maximum` on every reconcile cycle. No additional
+tenant-side controller is needed.
+
+### Discovery logic
+
+The controller watches `CustomResourceDefinition` objects
+(`apiextensions.k8s.io/v1`). On any CREATE or DELETE event it reconciles a synthetic
+singleton key `sweep/apigroups`. During reconcile it:
+
+1. Lists all CRDs on the management cluster.
+2. Extracts the unique set of `.spec.group` values.
+3. Filters out system-owned and seam-owned groups (see Exclusion list below).
+4. Reads `management-maximum` PermissionSet in `seam-system`.
+5. For each group not yet represented by an explicit rule in `management-maximum.Spec.Permissions`:
+   - Appends `PermissionRule{APIGroups: [group], Resources: ["*"], Verbs: all-standard}`.
+6. If any rules were added, patches `management-maximum`.
+7. Updates `Guardian.Status.DiscoveredAPIGroups` with the current full list of
+   discovered groups (alphabetically sorted, deduplicated).
+
+The controller never removes rules. Rule removal requires a governance-reviewed
+PermissionSet update (human-at-boundary). Additions are monotonic.
+
+`all-standard` verbs: `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`.
+
+### Exclusion list
+
+The following groups are never added as explicit rules because they are either
+built-in k8s groups or owned by seam/CAPI:
+
+- Empty string (k8s core group)
+- Any group ending in `.k8s.io` (all k8s extension groups)
+- Any group ending in `.x-k8s.io` (CAPI and k8s SIG ecosystem groups)
+- Any group ending in `.ontai.dev` (seam-owned groups)
+- Bare names without a dot: `apps`, `batch`, `autoscaling`, `policy`, `core`
+
+Groups matching these patterns are silently skipped. They are not recorded in
+`DiscoveredAPIGroups`.
+
+### Guardian CR status field
+
+`Guardian.Status.DiscoveredAPIGroups []string` -- sorted, deduplicated list of
+third-party API groups that the controller has added explicit rules for in
+`management-maximum`. Informational. Written by APIGroupSweepController on the
+management cluster only.
+
+### Cascade to tenant clusters
+
+No tenant-side action is needed. The existing auto-sync path in
+ClusterRBACPolicyReconciler handles this automatically:
+
+```
+APIGroupSweepController patches management-maximum
+  --> PermissionSetReconciler reconciles management-maximum
+  --> ClusterRBACPolicyReconciler detects management-maximum.Spec.Permissions changed
+  --> cluster-maximum.Spec.Permissions = management-maximum.Spec.Permissions (auto-sync)
+```
+
+The auto-sync path (§18 lines "If cluster-maximum.Spec.Permissions diverged from
+management-maximum, ClusterRBACPolicyReconciler patches cluster-maximum") covers all
+tenant clusters.
+
+### Invariants
+
+- APIGroupSweepController is management-only. It is never registered for role=tenant.
+- Additions to management-maximum are monotonic. No removal path exists in this controller.
+- The controller never creates new PermissionSet objects. It only patches management-maximum.
+- management-maximum must exist before any CRD sweep can proceed. If absent, the
+  controller requeues with a 30-second delay and logs a warning.
+- DiscoveredAPIGroups in Guardian status is informational only. It records what the
+  controller added. It is not the authoritative list of groups in management-maximum
+  (which may contain additional rules added by other authorized paths).
+
+---
+
 *security.ontai.dev schema - guardian*
 *Amendments appended below with date and rationale.*
 
@@ -1042,6 +1132,13 @@ availability wait.
   specified. Management cluster dual-layer pattern documented. RBACPolicy authorship
   invariant: compiler for Layer 1, guardian reconciler for Layer 2, never human-authored.
   security-system namespace removed throughout (does not exist).
+
+2026-05-02 - §21 APIGroupSweepController added. Management-only controller that watches
+  CRDs and extends management-maximum with explicit PermissionRules per third-party API
+  group. Groups ending in .k8s.io, .x-k8s.io, .ontai.dev, and bare k8s names are excluded.
+  Additions are monotonic; removal requires human governance review. cascade to tenant
+  cluster-maximum is automatic via ClusterRBACPolicyReconciler auto-sync (§18). Guardian
+  CR status gains DiscoveredAPIGroups field (informational, sorted, deduplicated).
 
 2026-04-26 - §20 Tenant Cluster Conductor Onboarding Protocol added. T-19 and T-19a
   implementation contract. Guardian (ClusterRBACPolicyReconciler) creates conductor-tenant

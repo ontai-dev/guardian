@@ -13,9 +13,10 @@ const (
 	ControllerBootstrap        ControllerName = "BootstrapController"
 
 	// Management-only controllers.
-	ControllerPermissionSet ControllerName = "PermissionSetReconciler"
-	ControllerEPG           ControllerName = "EPGReconciler"
-	ControllerAuditSink     ControllerName = "AuditSinkReconciler"
+	ControllerPermissionSet   ControllerName = "PermissionSetReconciler"
+	ControllerEPG             ControllerName = "EPGReconciler"
+	ControllerAuditSink       ControllerName = "AuditSinkReconciler"
+	ControllerAPIGroupSweep   ControllerName = "APIGroupSweepController"
 
 	// Tenant-only controllers.
 	ControllerAuditForwarder ControllerName = "AuditForwarderController"
@@ -44,6 +45,7 @@ func ControllerSetForRole(r Role) []ControllerName {
 			ControllerPermissionSet,
 			ControllerEPG,
 			ControllerAuditSink,
+			ControllerAPIGroupSweep,
 		)
 	case RoleTenant:
 		return append(set,

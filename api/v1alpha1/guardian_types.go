@@ -85,6 +85,13 @@ type GuardianStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DiscoveredAPIGroups is the sorted, deduplicated list of third-party API groups
+	// for which APIGroupSweepController has added explicit rules in management-maximum.
+	// Informational. Written by APIGroupSweepController on role=management only.
+	// guardian-schema.md §21.
+	// +optional
+	DiscoveredAPIGroups []string `json:"discoveredAPIGroups,omitempty"`
 }
 
 // Guardian is the singleton status CR for the guardian operator.
