@@ -17,18 +17,11 @@ import (
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
 )
 
-var (
-	snapshotGVR = schema.GroupVersionResource{
-		Group:   "security.ontai.dev",
-		Version: "v1alpha1",
-		Resource: "permissionsnapshots",
-	}
-	snapshotReceiptGVR = schema.GroupVersionResource{
-		Group:   "security.ontai.dev",
-		Version: "v1alpha1",
-		Resource: "permissionsnapshotreceipts",
-	}
-)
+var snapshotGVR = schema.GroupVersionResource{
+	Group:    "security.ontai.dev",
+	Version:  "v1alpha1",
+	Resource: "permissionsnapshots",
+}
 
 // LabelSnapshotTypeMirrored is applied to the local PermissionSnapshot mirror
 // written by TenantSnapshotRunnable in ont-system. Distinguishes the mirror from
