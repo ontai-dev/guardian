@@ -12,8 +12,9 @@
 package controller_test
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,13 +38,16 @@ import (
 	"github.com/ontai-dev/guardian/internal/controller"
 )
 
-// failFastHTTPClient returns an error immediately for all requests.
-// Injected into IdentityProviderReconciler so the OIDC reachability check
-// (which has a 10s timeout) does not race against the test poll timeout.
-type failFastHTTPClient struct{}
+// alwaysReachableHTTPDoer is a test-double HTTPDoer that immediately returns
+// HTTP 200 OK for any request. Injected into IdentityProviderReconciler in the
+// envtest manager to prevent real network calls during integration tests.
+type alwaysReachableHTTPDoer struct{}
 
-func (f *failFastHTTPClient) Do(_ *http.Request) (*http.Response, error) {
-	return nil, fmt.Errorf("unreachable: no OIDC server in test environment")
+func (alwaysReachableHTTPDoer) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+	}, nil
 }
 
 var (
@@ -112,7 +116,7 @@ func TestMain(m *testing.M) {
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		Recorder:   mgr.GetEventRecorder("identityprovider-controller"),
-		HTTPClient: &failFastHTTPClient{},
+		HTTPClient: alwaysReachableHTTPDoer{},
 	}).SetupWithManager(mgr); err != nil {
 		panic("failed to register IdentityProviderReconciler: " + err.Error())
 	}
