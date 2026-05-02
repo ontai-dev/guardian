@@ -257,7 +257,7 @@ func TestEPGReconciler_ManagementClusterSnapshotAlias(t *testing.T) {
 	r := &controller.EPGReconciler{
 		Client:                cl,
 		Scheme:                s,
-		Recorder:              record.NewFakeRecorder(16),
+		Recorder:              clientevents.NewFakeRecorder(16),
 		OperatorNamespace:     ns,
 		ManagementClusterName: mgmtCluster,
 	}
