@@ -9,7 +9,7 @@
 //   - Both roles: RBACPolicy, RBACProfile, IdentityProvider, IdentityBinding,
 //     Bootstrap, PermissionService gRPC.
 //   - role=management adds: PermissionSet, EPG, AuditSink.
-//   - role=tenant adds: AuditForwarder.
+//   - role=tenant adds: AuditForwarder, TenantSnapshotRunnable, TenantProfileRunnable.
 //
 // The CNPG migration runner (WS2 session/41) runs before controller registration
 // when role=management. guardian-schema.md §3, §16.
@@ -28,7 +28,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -78,6 +80,11 @@ func main() {
 	if managementClusterName == "" {
 		managementClusterName = "ccs-mgmt"
 	}
+
+	// Read CLUSTER_ID — this instance's cluster name. Required for role=tenant
+	// to filter PermissionSnapshots and name PermissionSnapshotReceipts.
+	// guardian-schema.md §7, §8.
+	clusterID := os.Getenv("CLUSTER_ID")
 
 	var (
 		metricsAddr          string
@@ -155,6 +162,30 @@ func main() {
 		auditWriter = database.NewLazyAuditWriter(lazyAuditDB)
 	}
 
+	// For role=tenant: build a dynamic client for the management cluster.
+	// MGMT_KUBECONFIG_PATH must point to a kubeconfig with read access to
+	// security.ontai.dev PermissionSnapshots on the management cluster.
+	// guardian-schema.md §7, §8, §15.
+	var mgmtDynClient dynamic.Interface
+	if guardianRole == role.RoleTenant {
+		mgmtKubeconfigPath := os.Getenv("MGMT_KUBECONFIG_PATH")
+		if mgmtKubeconfigPath == "" {
+			setupLog.Info("MGMT_KUBECONFIG_PATH not set — TenantSnapshotRunnable disabled")
+		} else {
+			mgmtCfg, cfgErr := clientcmd.BuildConfigFromFlags("", mgmtKubeconfigPath)
+			if cfgErr != nil {
+				setupLog.Error(cfgErr, "unable to build management cluster REST config", "path", mgmtKubeconfigPath)
+				os.Exit(1)
+			}
+			mgmtDynClient, err = dynamic.NewForConfig(mgmtCfg)
+			if err != nil {
+				setupLog.Error(err, "unable to create management cluster dynamic client")
+				os.Exit(1)
+			}
+			setupLog.Info("management cluster client ready", "server", mgmtCfg.Host)
+		}
+	}
+
 	// Register controllers shared by both roles.
 	if err := setupSharedControllers(mgr, auditWriter); err != nil {
 		setupLog.Error(err, "unable to set up shared controllers")
@@ -162,7 +193,7 @@ func main() {
 	}
 
 	// Register role-specific controllers.
-	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, auditWriter, operatorNamespace, freshnessWindow); err != nil {
+	if err := setupRoleControllers(mgr, guardianRole, epgStore, lazyAuditDB, auditWriter, operatorNamespace, freshnessWindow, clusterID, mgmtDynClient); err != nil {
 		setupLog.Error(err, "unable to set up role controllers", "role", string(guardianRole))
 		os.Exit(1)
 	}
@@ -243,15 +274,18 @@ func main() {
 	webhookServer.RegisterLineage()
 	webhookServer.RegisterRBACIntake(mgr.GetClient())
 	webhookServer.RegisterPackIntake(mgr.GetClient())
-	webhookServer.RegisterOperatorCRGuard(bootstrapWindow)
+	webhookServer.RegisterOperatorCRGuard(bootstrapWindow, operatorNamespace)
 	webhookServer.RegisterDeclaringPrincipal(bootstrapWindow)
 
 	// Register the bootstrap label check as a post-cache Runnable. Runs for both
-	// roles. CheckBootstrapLabels reads the seam-system namespace, which requires
+	// roles. CheckBootstrapLabels reads the operator namespace, which requires
 	// the informer cache to be running — it cannot execute before mgr.Start().
 	// On failure the Runnable calls os.Exit(1); returning nil allows the manager
 	// to continue. guardian-schema.md §4, INV-020.
-	if err := mgr.Add(&bootstrapLabelRunnable{kube: mgr.GetClient()}); err != nil {
+	if err := mgr.Add(&bootstrapLabelRunnable{
+		kube:              mgr.GetClient(),
+		operatorNamespace: operatorNamespace,
+	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap label runnable")
 		os.Exit(1)
 	}
@@ -261,11 +295,18 @@ func main() {
 	// annotation on any resource missing ontai.dev/rbac-owner=guardian. Signals
 	// completion via sweepDone, unblocking BootstrapController from advancing
 	// WebhookMode to ObserveOnly. guardian-schema.md §4, INV-020.
+	// ManagementClusterName is only needed for role=management (third-party profile
+	// creation targets seam-tenant-{ManagementClusterName}). For role=tenant,
+	// TenantProfileRunnable owns profile creation -- pass "" to skip that step.
+	sweepMgmtCluster := managementClusterName
+	if guardianRole == role.RoleTenant {
+		sweepMgmtCluster = ""
+	}
 	if err := mgr.Add(&controller.BootstrapAnnotationRunnable{
 		Client:                mgr.GetClient(),
 		SweepDone:             sweepDone,
 		AuditWriter:           auditWriter,
-		ManagementClusterName: managementClusterName,
+		ManagementClusterName: sweepMgmtCluster,
 	}); err != nil {
 		setupLog.Error(err, "unable to register bootstrap annotation runnable")
 		os.Exit(1)
@@ -287,7 +328,7 @@ func main() {
 	}
 }
 
-// bootstrapLabelRunnable verifies that the seam-system namespace carries the
+// bootstrapLabelRunnable verifies that the operator namespace carries the
 // seam.ontai.dev/webhook-mode=exempt label after the informer cache is running.
 // Registered via mgr.Add for both roles — the admission webhook requires this
 // label regardless of role. CheckBootstrapLabels reads a Kubernetes object, so
@@ -295,20 +336,22 @@ func main() {
 // os.Exit(1); the manager is shut down.
 // guardian-schema.md §4, INV-020, CS-INV-004.
 type bootstrapLabelRunnable struct {
-	kube client.Client
+	kube              client.Client
+	operatorNamespace string
 }
 
 func (r *bootstrapLabelRunnable) Start(ctx context.Context) error {
-	if err := webhook.CheckBootstrapLabels(ctx, r.kube); err != nil {
+	if err := webhook.CheckBootstrapLabels(ctx, r.kube, r.operatorNamespace); err != nil {
 		ctrl.Log.WithName("setup").Error(err,
 			"bootstrap label check failed; refusing to continue",
+			"namespace", r.operatorNamespace,
 			"label", webhook.WebhookModeLabelKey,
 			"expected", string(webhook.NamespaceModeExempt),
 		)
 		os.Exit(1)
 	}
 	ctrl.Log.WithName("setup").Info("bootstrap label check passed",
-		"namespace", "seam-system",
+		"namespace", r.operatorNamespace,
 		"label", webhook.WebhookModeLabelKey,
 	)
 	return nil
@@ -407,12 +450,12 @@ func setupSharedControllers(mgr ctrl.Manager, aw database.AuditWriter) error {
 
 // setupRoleControllers registers the controllers specific to the given role.
 // guardian-schema.md §15.
-func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64) error {
+func setupRoleControllers(mgr ctrl.Manager, r role.Role, epgStore *permissionservice.InMemoryEPGStore, auditDB database.AuditDatabase, aw database.AuditWriter, operatorNamespace string, freshnessWindow int64, clusterID string, mgmtDynClient dynamic.Interface) error {
 	switch r {
 	case role.RoleManagement:
 		return setupManagementControllers(mgr, epgStore, auditDB, aw, operatorNamespace, freshnessWindow)
 	case role.RoleTenant:
-		return setupTenantControllers(mgr)
+		return setupTenantControllers(mgr, clusterID, operatorNamespace, mgmtDynClient, aw)
 	default:
 		// ParseRole already prevents this path; guard defensively.
 		return nil
@@ -469,11 +512,16 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 	return nil
 }
 
-// setupTenantControllers registers controllers that run only when role=tenant.
-// guardian-schema.md §15.
-func setupTenantControllers(mgr ctrl.Manager) error {
-	clusterID := os.Getenv("CLUSTER_ID")
-
+// setupTenantControllers registers controllers and runnables that run only when
+// role=tenant. guardian-schema.md §15.
+//
+// TenantSnapshotRunnable: pulls PermissionSnapshot from management cluster,
+// writes PermissionSnapshotReceipt to tenant cluster, acknowledges back to
+// management, and sets Compliant=True. Requires mgmtDynClient; skipped when nil.
+//
+// TenantProfileRunnable: creates RBACProfiles in Namespace for each discovered
+// third-party component. Runs periodically (60 s). CS-INV-008.
+func setupTenantControllers(mgr ctrl.Manager, clusterID, namespace string, mgmtDynClient dynamic.Interface, aw database.AuditWriter) error {
 	// AuditForwarderController: full implementation in WS4 session/41.
 	auditCh := make(chan controller.AuditForwarderEvent, 256)
 	if err := (&controller.AuditForwarderController{
@@ -484,6 +532,35 @@ func setupTenantControllers(mgr ctrl.Manager) error {
 		ClusterID: clusterID,
 	}).SetupWithManager(mgr); err != nil {
 		return err
+	}
+
+	// TenantSnapshotRunnable: guardian role=tenant exclusively owns the
+	// PermissionSnapshot acknowledgement and Compliant condition lifecycle.
+	// Disabled when MGMT_KUBECONFIG_PATH is absent (mgmtDynClient == nil).
+	// guardian-schema.md §7, §8. CS-INV-001.
+	if mgmtDynClient != nil {
+		if err := mgr.Add(&controller.TenantSnapshotRunnable{
+			LocalClient: mgr.GetClient(),
+			MgmtClient:  mgmtDynClient,
+			ClusterID:   clusterID,
+			Namespace:   namespace,
+			Interval:    60 * time.Second,
+		}); err != nil {
+			return fmt.Errorf("register TenantSnapshotRunnable: %w", err)
+		}
+	}
+
+	// TenantProfileRunnable: creates RBACProfiles for known third-party components
+	// in Namespace (ont-system) on the tenant cluster. CS-INV-008 -- no per-component
+	// PermissionSet or RBACPolicy is created here.
+	if err := mgr.Add(&controller.TenantProfileRunnable{
+		Client:      mgr.GetClient(),
+		Namespace:   namespace,
+		ClusterID:   clusterID,
+		Interval:    60 * time.Second,
+		AuditWriter: aw,
+	}); err != nil {
+		return fmt.Errorf("register TenantProfileRunnable: %w", err)
 	}
 
 	return nil

@@ -54,18 +54,17 @@ func TestValidateRBACProfileSpec_EmptyPrincipalRef(t *testing.T) {
 	}
 }
 
-// TestValidateRBACProfileSpec_EmptyRBACPolicyRef verifies that an empty RBACPolicyRef fails.
+// TestValidateRBACProfileSpec_EmptyRBACPolicyRef verifies that an empty RBACPolicyRef is valid.
+// Tenant-cluster profiles intentionally omit RBACPolicyRef; the enforcement reference is the
+// local PermissionSnapshot mirror. GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
 func TestValidateRBACProfileSpec_EmptyRBACPolicyRef(t *testing.T) {
 	spec := validProfileSpec()
 	spec.RBACPolicyRef = ""
 
 	result := controller.ValidateRBACProfileSpec(spec)
 
-	if result.Valid {
-		t.Error("expected Valid=false for empty RBACPolicyRef")
-	}
-	if !containsAnyReason(result.Reasons, "rbacPolicyRef") {
-		t.Errorf("expected reason mentioning rbacPolicyRef, got: %v", result.Reasons)
+	if !result.Valid {
+		t.Errorf("expected Valid=true for empty RBACPolicyRef (permitted on tenant clusters); reasons: %v", result.Reasons)
 	}
 }
 
@@ -169,10 +168,11 @@ func TestValidateRBACProfileSpec_EmptyTargetClusters(t *testing.T) {
 
 // TestValidateRBACProfileSpec_MultipleFailuresCollected verifies the all-failures
 // collection model: when multiple checks fail, all are present in the result.
+// RBACPolicyRef is excluded because empty is now valid (tenant snapshot path).
 func TestValidateRBACProfileSpec_MultipleFailuresCollected(t *testing.T) {
 	spec := securityv1alpha1.RBACProfileSpec{
 		PrincipalRef:           "", // fails check 1
-		RBACPolicyRef:          "", // fails check 2
+		RBACPolicyRef:          "", // valid: tenant profiles omit this field
 		PermissionDeclarations: []securityv1alpha1.PermissionDeclaration{}, // fails check 3
 		TargetClusters:         []string{}, // fails check 6
 	}
@@ -182,8 +182,8 @@ func TestValidateRBACProfileSpec_MultipleFailuresCollected(t *testing.T) {
 	if result.Valid {
 		t.Error("expected Valid=false when multiple checks fail")
 	}
-	if len(result.FailedChecks) < 4 {
-		t.Errorf("expected at least 4 failed checks, got %d: %v", len(result.FailedChecks), result.FailedChecks)
+	if len(result.FailedChecks) < 3 {
+		t.Errorf("expected at least 3 failed checks, got %d: %v", len(result.FailedChecks), result.FailedChecks)
 	}
 	if len(result.Reasons) != len(result.FailedChecks) {
 		t.Errorf("Reasons length %d != FailedChecks length %d",

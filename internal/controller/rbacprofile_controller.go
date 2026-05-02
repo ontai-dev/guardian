@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -177,7 +178,18 @@ func (r *RBACProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// Step E — Fetch the governing RBACPolicy.
+	// Step E-tenant — Tenant snapshot path.
+	// Profiles with empty RBACPolicyRef are tenant-cluster governance tracking objects.
+	// Their ceiling is the local PermissionSnapshot mirror (written by TenantSnapshotRunnable).
+	// The management cluster's admission webhook enforced the ceiling at declaration time.
+	// provisionRBACResources is skipped: K8s RBAC for third-party components is laid down
+	// by the pack-deploy conductor job, not recreated by guardian on the tenant cluster.
+	// GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
+	if profile.Spec.RBACPolicyRef == "" {
+		return r.reconcileTenantSnapshotPath(ctx, profile)
+	}
+
+	// Step E — Fetch the governing RBACPolicy (management path).
 	policy := &securityv1alpha1.RBACPolicy{}
 	policyKey := types.NamespacedName{Name: profile.Spec.RBACPolicyRef, Namespace: profile.Namespace}
 	if err := r.Client.Get(ctx, policyKey, policy); err != nil {
@@ -450,6 +462,100 @@ func (r *RBACProfileReconciler) MapPermissionSetToProfiles(ctx context.Context, 
 		}
 	}
 	return reqs
+}
+
+// ---------------------------------------------------------------------------
+// Tenant snapshot path
+// ---------------------------------------------------------------------------
+
+// reconcileTenantSnapshotPath handles profiles with empty RBACPolicyRef.
+// These are tenant-cluster governance tracking objects. Their ceiling is the local
+// PermissionSnapshot mirror written by TenantSnapshotRunnable (labeled
+// ontai.dev/snapshot-type=mirrored). The management cluster's admission webhook
+// enforced the ceiling when the component was deployed via ClusterPack.
+//
+// provisionRBACResources is not called: K8s RBAC for third-party components
+// (cert-manager, kueue, etc.) is installed by the pack-deploy conductor job.
+// Guardian's role on the tenant cluster is governance tracking, not RBAC creation.
+//
+// Conditions set:
+//   - ProfileValidated=True: structural validation passed (Step D).
+//   - PolicyCompliant=True: governance delegated to management cluster webhook.
+//   - Provisioned=True: cluster is under governance (mirrored snapshot present).
+//   - Provisioned=False/SnapshotNotAvailable: mirror not yet written, requeue.
+//
+// GUARDIAN-BL-RBACPROFILE-TENANT-PROVISIONING.
+func (r *RBACProfileReconciler) reconcileTenantSnapshotPath(ctx context.Context, profile *securityv1alpha1.RBACProfile) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	snapshotList := &securityv1alpha1.PermissionSnapshotList{}
+	if err := r.Client.List(ctx, snapshotList,
+		client.InNamespace(profile.Namespace),
+		client.MatchingLabels{LabelKeySnapshotType: LabelSnapshotTypeMirrored},
+	); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list local mirrored snapshots: %w", err)
+	}
+
+	if len(snapshotList.Items) == 0 {
+		profile.Status.Provisioned = false
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+			metav1.ConditionFalse,
+			"SnapshotNotAvailable",
+			"Local PermissionSnapshot mirror not yet available; waiting for TenantSnapshotRunnable.",
+			profile.Generation,
+		)
+		securityv1alpha1.SetCondition(
+			&profile.Status.Conditions,
+			securityv1alpha1.ConditionTypeRBACProfileValidated,
+			metav1.ConditionFalse,
+			"SnapshotNotAvailable",
+			"Local PermissionSnapshot mirror not yet available.",
+			profile.Generation,
+		)
+		logger.Info("tenant snapshot mirror not yet available, requeueing",
+			"profile", profile.Name, "namespace", profile.Namespace)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// Mirrored snapshot present: the cluster is under governance.
+	// Mark the profile provisioned without local policy/permset validation.
+	// Content-level ceiling enforcement is the tenant admission webhook's responsibility.
+	now := metav1.Now()
+	profile.Status.Provisioned = true
+	profile.Status.LastProvisionedAt = &now
+	profile.Status.ValidationSummary = "Provisioned (tenant snapshot path)."
+
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfileProvisioned,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"Governance confirmed: local PermissionSnapshot mirror present.",
+		profile.Generation,
+	)
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfileValidated,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"Structural validation passed.",
+		profile.Generation,
+	)
+	securityv1alpha1.SetCondition(
+		&profile.Status.Conditions,
+		securityv1alpha1.ConditionTypeRBACProfilePolicyCompliant,
+		metav1.ConditionTrue,
+		securityv1alpha1.ReasonProvisioningComplete,
+		"Ceiling enforcement delegated to management cluster admission webhook.",
+		profile.Generation,
+	)
+
+	logger.Info("RBACProfile provisioned via tenant snapshot path",
+		"profile", profile.Name, "namespace", profile.Namespace,
+		"snapshot", snapshotList.Items[0].Name)
+	return ctrl.Result{}, nil
 }
 
 // ---------------------------------------------------------------------------

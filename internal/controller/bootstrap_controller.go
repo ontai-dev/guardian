@@ -26,11 +26,8 @@ import (
 
 // GuardianSingletonName is the name of the singleton Guardian CR that
 // BootstrapController creates and manages. There is exactly one Guardian CR
-// per cluster, in seam-system. INV-020.
+// per cluster. INV-020.
 const GuardianSingletonName = "guardian"
-
-// GuardianSingletonNamespace is the namespace of the singleton Guardian CR.
-const GuardianSingletonNamespace = "seam-system"
 
 // BootstrapController manages the lifecycle of the singleton Guardian CR and
 // drives the admission enforcement mode transitions.

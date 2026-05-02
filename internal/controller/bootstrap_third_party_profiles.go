@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	securityv1alpha1 "github.com/ontai-dev/guardian/api/v1alpha1"
+	"github.com/ontai-dev/guardian/internal/database"
 )
 
 // thirdPartyComponent describes a third-party component Guardian wraps at bootstrap
@@ -194,5 +195,17 @@ func (r *BootstrapAnnotationRunnable) ensureComponentRBACProfile(ctx context.Con
 			},
 		},
 	}
-	return r.Client.Create(ctx, profile)
+	if err := r.Client.Create(ctx, profile); err != nil {
+		return err
+	}
+	writeAudit(ctx, r.AuditWriter, database.AuditEvent{
+		ClusterID:      r.ManagementClusterName,
+		Subject:        principalRef,
+		Action:         "rbacprofile.component_wrapped",
+		Resource:       comp.ProfileName,
+		Decision:       "system",
+		MatchedPolicy:  comp.Name,
+		SequenceNumber: auditSeq(),
+	})
+	return nil
 }

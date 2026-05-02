@@ -33,10 +33,6 @@ var ProtectedOperatorCRKinds = map[string]bool{
 	"PackExecution":      true,
 }
 
-// seamOperatorSAPrefix is the username prefix for seam operator service accounts.
-// All operator controllers run as ServiceAccounts in the seam-system namespace.
-const seamOperatorSAPrefix = "system:serviceaccount:seam-system:"
-
 // OperatorCRGuardRequest is the input to EvaluateOperatorAuthorship. It contains
 // only the fields required for the authorship decision, decoupled from any
 // Kubernetes API machinery. Constructed by operator_cr_handler.go from the raw
@@ -55,6 +51,10 @@ type OperatorCRGuardRequest struct {
 	// operator machinery to initialise before authorship checks are applied.
 	// INV-020.
 	BootstrapWindowOpen bool
+	// OperatorNamespace is the namespace where all seam operator controllers run.
+	// Read from OPERATOR_NAMESPACE at runtime: "seam-system" on management clusters,
+	// "ont-system" on tenant clusters.
+	OperatorNamespace string
 }
 
 // OperatorCRGuardDecision is the result of EvaluateOperatorAuthorship.
@@ -67,11 +67,12 @@ type OperatorCRGuardDecision struct {
 }
 
 // isSeamOperatorServiceAccount reports whether username belongs to a seam
-// operator service account -- a ServiceAccount in seam-system. All operator
-// controllers (guardian, wrapper, platform, conductor, seam-core) run as
-// ServiceAccounts in seam-system and must be permitted to update protected CRs.
-func isSeamOperatorServiceAccount(username string) bool {
-	return strings.HasPrefix(username, seamOperatorSAPrefix)
+// operator service account -- a ServiceAccount in the operator namespace.
+// All operator controllers run as ServiceAccounts in that namespace and must
+// be permitted to update protected CRs.
+func isSeamOperatorServiceAccount(username, operatorNamespace string) bool {
+	prefix := "system:serviceaccount:" + operatorNamespace + ":"
+	return strings.HasPrefix(username, prefix)
 }
 
 // EvaluateOperatorAuthorship applies the operator-authorship guard to an
@@ -84,8 +85,8 @@ func isSeamOperatorServiceAccount(username string) bool {
 //     are guarded -- CREATE requests are not restricted by this guard.
 //     In the admission webhook, PATCH arrives as UPDATE.
 //  3. If the bootstrap window is open: allow unconditionally. INV-020.
-//  4. If Username starts with system:serviceaccount:seam-system:: allow.
-//     All seam operator controllers run as ServiceAccounts in seam-system.
+//  4. If Username starts with system:serviceaccount:{OperatorNamespace}:: allow.
+//     All seam operator controllers run as ServiceAccounts in the operator namespace.
 //  5. Otherwise: deny with a clear human-readable message.
 func EvaluateOperatorAuthorship(req OperatorCRGuardRequest) OperatorCRGuardDecision {
 	// Gate 1: unprotected kind.
@@ -104,7 +105,7 @@ func EvaluateOperatorAuthorship(req OperatorCRGuardRequest) OperatorCRGuardDecis
 	}
 
 	// Gate 4: seam operator service account -- allow.
-	if isSeamOperatorServiceAccount(req.Username) {
+	if isSeamOperatorServiceAccount(req.Username, req.OperatorNamespace) {
 		return OperatorCRGuardDecision{Allowed: true}
 	}
 
@@ -112,11 +113,11 @@ func EvaluateOperatorAuthorship(req OperatorCRGuardRequest) OperatorCRGuardDecis
 		Allowed: false,
 		Reason: fmt.Sprintf(
 			"%s is an operator-created CR and may not be modified by principal %q; "+
-				"only seam operator service accounts (system:serviceaccount:seam-system:*) "+
+				"only seam operator service accounts (system:serviceaccount:%s:*) "+
 				"may update this resource; if this update is intentional, use the "+
 				"operator's reconciliation path to make the change "+
 				"(G-BL-CR-IMMUTABILITY)",
-			req.Kind, req.Username,
+			req.Kind, req.Username, req.OperatorNamespace,
 		),
 	}
 }

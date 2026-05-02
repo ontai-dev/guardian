@@ -17,6 +17,24 @@ const (
 	AnnotationRBACOwnerValue = "guardian"
 )
 
+// LabelRBACProfileType is the label key that identifies the type of an RBACProfile.
+// seam-operator profiles must reference the management-maximum PermissionSet only
+// (CS-INV-008). T-25a.
+const (
+	LabelRBACProfileType            = "ontai.dev/rbac-profile-type"
+	LabelRBACProfileTypeSeamOperator = "seam-operator"
+)
+
+// managementMaximumPermissionSetRef is the only PermissionSet reference permitted
+// in seam-operator RBACProfiles. Any other reference violates CS-INV-008.
+const managementMaximumPermissionSetRef = "management-maximum"
+
+// denyReasonSeamOperatorPermissionSetRef is the denial message for seam-operator
+// RBACProfiles that reference a PermissionSet other than management-maximum.
+const denyReasonSeamOperatorPermissionSetRef = "seam-operator RBACProfiles must reference " +
+	"the management-maximum PermissionSet only; per CS-INV-008 no per-component " +
+	"PermissionSet is permitted"
+
 // InterceptedKinds is the set of Kubernetes resource kinds intercepted by the
 // ONT RBAC admission webhook on the management cluster. Any resource in this set
 // that arrives at admission without the correct ontai.dev/rbac-owner annotation
@@ -27,6 +45,7 @@ var InterceptedKinds = map[string]bool{
 	"RoleBinding":        true,
 	"ClusterRoleBinding": true,
 	"ServiceAccount":     true,
+	"RBACProfile":        true,
 }
 
 // AdmissionOperation is the type of operation for an incoming admission request.
@@ -85,6 +104,14 @@ type AdmissionRequest struct {
 	// Annotations are the annotations from the incoming object's metadata.
 	// May be nil if the object has no annotations.
 	Annotations map[string]string
+	// Labels are the labels from the incoming object's metadata.
+	// Used for RBACProfile two-path routing (ontai.dev/rbac-profile-type). T-25a.
+	// May be nil if the object has no labels.
+	Labels map[string]string
+	// PermissionSetRefs contains all permissionSetRef values from the admitted
+	// RBACProfile's spec.permissionDeclarations. Empty for all other kinds.
+	// Used to enforce CS-INV-008 for seam-operator RBACProfiles. T-25a.
+	PermissionSetRefs []string
 	// BootstrapWindowOpen is true when the bootstrap RBAC window is open.
 	// Set by the admission handler from BootstrapWindow.IsOpen before calling
 	// EvaluateAdmission. When true, intercepted RBAC resources are admitted
@@ -129,7 +156,9 @@ const denyReason = "resource must carry annotation ontai.dev/rbac-owner=guardian
 //  3. If the bootstrap RBAC window is open: allow unconditionally. The window is
 //     open from guardian startup until the admission webhook is registered.
 //     It closes permanently on registration. INV-020, CS-INV-004.
-//  4. If annotation ontai.dev/rbac-owner=guardian is present: allow.
+//  4. If annotation ontai.dev/rbac-owner=guardian is present: allow (with RBACProfile
+//     seam-operator path additional check: all permissionSetRefs must be
+//     management-maximum, CS-INV-008).
 //  5. If NSMode is NamespaceModeObserve: allow with ObservedDeny=true and the
 //     denial reason recorded. The handler logs the observation.
 //  6. Otherwise (Enforce mode or unlabelled namespace): deny.
@@ -155,6 +184,18 @@ func EvaluateAdmission(req AdmissionRequest) AdmissionDecision {
 
 	// Gate 4 — Ownership annotation: allow owned resources.
 	if req.Annotations[AnnotationRBACOwner] == AnnotationRBACOwnerValue {
+		// Gate 4a — RBACProfile seam-operator path: enforce CS-INV-008.
+		// Seam-operator profiles must reference management-maximum exclusively.
+		// This check applies after ownership is confirmed, ensuring only guardian
+		// can author seam-operator profiles, and only with the correct ceiling.
+		if req.Kind == "RBACProfile" && req.Labels[LabelRBACProfileType] == LabelRBACProfileTypeSeamOperator {
+			if reason := validateSeamOperatorPermissionSetRefs(req.PermissionSetRefs); reason != "" {
+				if req.NSMode == NamespaceModeObserve {
+					return AdmissionDecision{Allowed: true, ObservedDeny: true, Reason: reason}
+				}
+				return AdmissionDecision{Allowed: false, Reason: reason}
+			}
+		}
 		return AdmissionDecision{Allowed: true}
 	}
 
@@ -175,4 +216,16 @@ func EvaluateAdmission(req AdmissionRequest) AdmissionDecision {
 		Allowed: false,
 		Reason:  denyReason,
 	}
+}
+
+// validateSeamOperatorPermissionSetRefs checks that all PermissionSetRef values
+// in a seam-operator RBACProfile are exactly "management-maximum". Returns a
+// non-empty denial reason string if any ref violates CS-INV-008, empty if valid.
+func validateSeamOperatorPermissionSetRefs(refs []string) string {
+	for _, ref := range refs {
+		if ref != managementMaximumPermissionSetRef {
+			return denyReasonSeamOperatorPermissionSetRef
+		}
+	}
+	return ""
 }

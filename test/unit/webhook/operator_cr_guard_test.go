@@ -15,6 +15,9 @@ import (
 // humanPrincipal is a non-operator username for tests that must be blocked.
 const humanPrincipal = "kubernetes-admin"
 
+// testNS is the operator namespace used in these tests.
+const testNS = "seam-system"
+
 // operatorSA is a seam operator service account username that must be allowed.
 const operatorSA = "system:serviceaccount:seam-system:guardian"
 
@@ -76,9 +79,10 @@ func TestOperatorCRGuard_HumanBlocked_PackExecution(t *testing.T) {
 func TestOperatorCRGuard_OperatorSA_AllowedAllFourKinds(t *testing.T) {
 	for _, kind := range []string{"PackInstance", "RunnerConfig", "PermissionSnapshot", "PackExecution"} {
 		decision := webhook.EvaluateOperatorAuthorship(webhook.OperatorCRGuardRequest{
-			Kind:      kind,
-			Operation: webhook.OperationUpdate,
-			Username:  operatorSA,
+			Kind:              kind,
+			Operation:         webhook.OperationUpdate,
+			Username:          operatorSA,
+			OperatorNamespace: testNS,
 		})
 		if !decision.Allowed {
 			t.Errorf("expected operator SA to be allowed on %s UPDATE; got denied: %s", kind, decision.Reason)
@@ -86,12 +90,13 @@ func TestOperatorCRGuard_OperatorSA_AllowedAllFourKinds(t *testing.T) {
 	}
 }
 
-// Test 6 -- Different operator SA in seam-system also allowed.
-func TestOperatorCRGuard_AnySeamSystemSA_Allowed(t *testing.T) {
+// Test 6 -- Different operator SA in the operator namespace also allowed.
+func TestOperatorCRGuard_AnyOperatorNSSA_Allowed(t *testing.T) {
 	decision := webhook.EvaluateOperatorAuthorship(webhook.OperatorCRGuardRequest{
-		Kind:      "RunnerConfig",
-		Operation: webhook.OperationUpdate,
-		Username:  anotherOperatorSA,
+		Kind:              "RunnerConfig",
+		Operation:         webhook.OperationUpdate,
+		Username:          anotherOperatorSA,
+		OperatorNamespace: testNS,
 	})
 	if !decision.Allowed {
 		t.Errorf("expected wrapper SA to be allowed on RunnerConfig UPDATE; got denied: %s", decision.Reason)

@@ -71,12 +71,16 @@ func (s *AdmissionWebhookServer) Register(window *BootstrapWindow, namespaceMode
 // the bootstrap phase before operator RBAC is fully applied. INV-020,
 // G-BL-CR-IMMUTABILITY.
 //
+// operatorNamespace is the namespace where all seam operator controllers run.
+// Read from OPERATOR_NAMESPACE at runtime.
+//
 // RegisterOperatorCRGuard must be called after the manager is created and
 // before mgr.Start, alongside Register. CS-INV-006.
-func (s *AdmissionWebhookServer) RegisterOperatorCRGuard(window *BootstrapWindow) {
+func (s *AdmissionWebhookServer) RegisterOperatorCRGuard(window *BootstrapWindow, operatorNamespace string) {
 	handler := &OperatorCRGuardHandler{
-		bootstrapWindow: window,
-		auditWriter:     s.AuditWriter,
+		bootstrapWindow:   window,
+		auditWriter:       s.AuditWriter,
+		operatorNamespace: operatorNamespace,
 	}
 	s.mgr.GetWebhookServer().Register(OperatorCRGuardWebhookPath, &admission.Webhook{Handler: handler})
 }

@@ -306,3 +306,93 @@ func TestEvaluateAdmission_BootstrapWindowClosed_CorrectAnnotation_Allowed(t *te
 			decision.Reason)
 	}
 }
+
+// --- T-25a: RBACProfile two-path routing ---
+
+// Test 22 — RBACProfile without annotation is denied (same as other RBAC resources).
+func TestEvaluateAdmission_RBACProfile_NoAnnotation_Denied(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "RBACProfile",
+		Operation: webhook.OperationCreate,
+	})
+	if decision.Allowed {
+		t.Error("RBACProfile without rbac-owner annotation must be denied")
+	}
+	if !strings.Contains(decision.Reason, "ontai.dev/rbac-owner=guardian") {
+		t.Errorf("denial reason must reference annotation; got %q", decision.Reason)
+	}
+}
+
+// Test 23 — RBACProfile with correct annotation, no seam-operator label: allowed.
+// Non-seam-operator profiles follow the normal annotation-only path.
+func TestEvaluateAdmission_RBACProfile_NonSeamOperator_AnnotationOnly_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "RBACProfile",
+		Operation: webhook.OperationCreate,
+		Annotations: map[string]string{
+			webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue,
+		},
+	})
+	if !decision.Allowed {
+		t.Errorf("RBACProfile with guardian annotation and no seam-operator label must be allowed; reason %q", decision.Reason)
+	}
+}
+
+// Test 24 — seam-operator RBACProfile with management-maximum permissionSetRef: allowed.
+// CS-INV-008: seam-operator profiles must reference management-maximum exclusively.
+func TestEvaluateAdmission_RBACProfile_SeamOperator_ManagementMaximum_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "RBACProfile",
+		Operation: webhook.OperationCreate,
+		Annotations: map[string]string{
+			webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue,
+		},
+		Labels: map[string]string{
+			webhook.LabelRBACProfileType: webhook.LabelRBACProfileTypeSeamOperator,
+		},
+		PermissionSetRefs: []string{"management-maximum"},
+	})
+	if !decision.Allowed {
+		t.Errorf("seam-operator RBACProfile referencing management-maximum must be allowed; reason %q", decision.Reason)
+	}
+}
+
+// Test 25 — seam-operator RBACProfile with wrong permissionSetRef: denied. CS-INV-008.
+func TestEvaluateAdmission_RBACProfile_SeamOperator_WrongRef_Denied(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "RBACProfile",
+		Operation: webhook.OperationCreate,
+		Annotations: map[string]string{
+			webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue,
+		},
+		Labels: map[string]string{
+			webhook.LabelRBACProfileType: webhook.LabelRBACProfileTypeSeamOperator,
+		},
+		PermissionSetRefs: []string{"cluster-maximum"},
+	})
+	if decision.Allowed {
+		t.Error("seam-operator RBACProfile referencing cluster-maximum must be denied (CS-INV-008)")
+	}
+	if !strings.Contains(decision.Reason, "management-maximum") {
+		t.Errorf("denial reason must mention management-maximum; got %q", decision.Reason)
+	}
+}
+
+// Test 26 — seam-operator RBACProfile with empty permissionSetRefs: allowed.
+// Profiles with no declarations declare no ceiling -- valid during bootstrap provisioning.
+func TestEvaluateAdmission_RBACProfile_SeamOperator_NoRefs_Allowed(t *testing.T) {
+	decision := webhook.EvaluateAdmission(webhook.AdmissionRequest{
+		Kind:      "RBACProfile",
+		Operation: webhook.OperationCreate,
+		Annotations: map[string]string{
+			webhook.AnnotationRBACOwner: webhook.AnnotationRBACOwnerValue,
+		},
+		Labels: map[string]string{
+			webhook.LabelRBACProfileType: webhook.LabelRBACProfileTypeSeamOperator,
+		},
+		PermissionSetRefs: nil,
+	})
+	if !decision.Allowed {
+		t.Errorf("seam-operator RBACProfile with no permissionSetRefs must be allowed; reason %q", decision.Reason)
+	}
+}

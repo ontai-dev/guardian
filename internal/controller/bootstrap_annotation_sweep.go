@@ -140,12 +140,14 @@ func (r *BootstrapAnnotationRunnable) Start(ctx context.Context) error {
 	)
 
 	// After sweeping all existing RBAC, create third-party component RBACProfiles
-	// in their canonical namespaces. Once these profiles reach Provisioned=True,
-	// BootstrapController advances WebhookMode to ObserveOnly then Enforcing.
-	// Enforcement blocks RBAC changes outside Guardian scope from that point on.
+	// in their canonical namespaces. Skipped for role=tenant: TenantProfileRunnable
+	// owns profile creation on tenant clusters. ManagementClusterName is empty
+	// when the BootstrapAnnotationRunnable is registered for role=tenant.
 	// guardian-schema.md §3 Step 2, §6.
-	if err := r.createThirdPartyProfiles(ctx); err != nil {
-		return fmt.Errorf("bootstrap: third-party profile creation: %w", err)
+	if r.ManagementClusterName != "" {
+		if err := r.createThirdPartyProfiles(ctx); err != nil {
+			return fmt.Errorf("bootstrap: third-party profile creation: %w", err)
+		}
 	}
 
 	r.SweepDone.Store(true)

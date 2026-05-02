@@ -58,7 +58,7 @@ func buildBootstrapReconciler(t *testing.T, objs ...runtime.Object) (
 		Recorder:          clientevents.NewFakeRecorder(32),
 		Gate:              gate,
 		Registry:          registry,
-		OperatorNamespace: controller.GuardianSingletonNamespace,
+		OperatorNamespace: "seam-system",
 	}
 	return r, gate, registry
 }
@@ -79,7 +79,7 @@ func getGuardian(t *testing.T, r *controller.BootstrapController) *securityv1alp
 	gdn := &securityv1alpha1.Guardian{}
 	if err := r.Client.Get(context.Background(), types.NamespacedName{
 		Name:      controller.GuardianSingletonName,
-		Namespace: controller.GuardianSingletonNamespace,
+		Namespace: "seam-system",
 	}, gdn); err != nil {
 		t.Fatalf("get Guardian singleton: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestBootstrapController_EnforcingAdvancesWhenAllNamespacesReady(t *testing.
 	r := buildReconcilerForEnforcing(t, profile, role)
 
 	// First reconcile: ObserveOnly advance (profiles ready, sweep done).
-	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, "seam-system")
 
 	gdn := getGuardian(t, r)
 	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeObserveOnly {
@@ -443,7 +443,7 @@ func TestBootstrapController_EnforcingAdvancesWhenAllNamespacesReady(t *testing.
 	}
 
 	// Second reconcile: Enforcing advance (all resources annotated, no ClusterRoles/CRBs).
-	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, "seam-system")
 
 	gdn = getGuardian(t, r)
 	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {
@@ -467,7 +467,7 @@ func TestBootstrapController_EnforcingBlockedWhenUnannotatedResourceExists(t *te
 	r := buildReconcilerForEnforcing(t, profile, unannotated)
 
 	// Two reconciles: first ObserveOnly, second evaluates enforcing.
-	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, "seam-system")
 
 	gdn := getGuardian(t, r)
 	if gdn.Status.WebhookMode == securityv1alpha1.WebhookModeEnforcing {
@@ -491,7 +491,7 @@ func TestBootstrapController_EnforcingTransitionIsOneWay(t *testing.T) {
 	r := buildReconcilerForEnforcing(t, profile, role)
 
 	// Advance to Enforcing.
-	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+	reconcileBootstrapN(t, r, 2, controller.GuardianSingletonName, "seam-system")
 
 	gdn := getGuardian(t, r)
 	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {
@@ -503,7 +503,7 @@ func TestBootstrapController_EnforcingTransitionIsOneWay(t *testing.T) {
 	if err := r.Client.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update profile: %v", err)
 	}
-	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, controller.GuardianSingletonNamespace)
+	reconcileBootstrapN(t, r, 1, controller.GuardianSingletonName, "seam-system")
 
 	gdn = getGuardian(t, r)
 	if gdn.Status.WebhookMode != securityv1alpha1.WebhookModeEnforcing {

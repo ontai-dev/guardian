@@ -70,6 +70,17 @@ spec:
             description: PermissionSnapshotReceiptStatus defines the observed state
               of a PermissionSnapshotReceipt.
             properties:
+              degradedReason:
+                description: |-
+                  DegradedReason describes the signature verification failure when
+                  DegradedSecurityState=true. Written by conductor agent in tenant mode. INV-026.
+                type: string
+              degradedSecurityState:
+                description: |-
+                  DegradedSecurityState is set to true when the snapshot pull loop cannot
+                  verify the Ed25519 signature on the PermissionSnapshot. Written by conductor
+                  agent in tenant mode. INV-026.
+                type: boolean
               localArtifacts:
                 description: LocalArtifacts is the list of RBAC artifact names provisioned
                   from this snapshot.

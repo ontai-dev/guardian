@@ -17,11 +17,12 @@ import (
 //
 // It intercepts UPDATE requests for PackInstance, RunnerConfig, PermissionSnapshot,
 // and PackExecution. Requests from principals other than seam operator service
-// accounts (system:serviceaccount:seam-system:*) are rejected at admission.
+// accounts (system:serviceaccount:{OperatorNamespace}:*) are rejected at admission.
 // G-BL-CR-IMMUTABILITY.
 type OperatorCRGuardHandler struct {
-	bootstrapWindow *BootstrapWindow
-	auditWriter     database.AuditWriter
+	bootstrapWindow   *BootstrapWindow
+	auditWriter       database.AuditWriter
+	operatorNamespace string
 }
 
 // Handle implements admission.Handler.
@@ -37,6 +38,7 @@ func (h *OperatorCRGuardHandler) Handle(ctx context.Context, req admission.Reque
 		Operation:           AdmissionOperation(req.Operation),
 		Username:            req.UserInfo.Username,
 		BootstrapWindowOpen: h.bootstrapWindow.IsOpen(),
+		OperatorNamespace:   h.operatorNamespace,
 	})
 
 	if !decision.Allowed {
