@@ -510,6 +510,17 @@ func setupManagementControllers(mgr ctrl.Manager, epgStore *permissionservice.In
 		return err
 	}
 
+	// APIGroupSweepController: watches CRDs and extends management-maximum with
+	// explicit rules for every third-party API group discovered on the management
+	// cluster. guardian-schema.md §21.
+	if err := (&controller.APIGroupSweepController{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
 	return nil
 }
 
